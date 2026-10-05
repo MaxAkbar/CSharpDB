@@ -2,6 +2,46 @@
 
 This file preserves the benchmark release logs, failed-run notes, investigation records, and detailed historical snapshots that used to live in `README.md`. The main README is now intentionally user-first and release-stable; use this file when investigating why a past benchmark number changed or why a specific run was not promoted.
 
+## October 5, 2026 Read-Ahead Cancellation Reuse (Local Allocation Improvement)
+
+After `30c3a01c` committed the LIMIT fix and allocation-test repair, the next
+candidate targeted per-leaf read-ahead setup. A successfully consumed prefetch
+now clears its completed task and page ID while retaining the cursor's
+uncancelled cancellation source. Subsequent reads can reuse its registration
+storage, and successful consumption avoids an unnecessary fault continuation.
+Cancellation, read faults, reseeks, range/cache boundaries, and disposal retain
+their cleanup paths. Page buffers and retained payload ownership are unchanged.
+
+The Release builds had zero warnings or errors. All **3,363 engine tests and
+319 ADO tests** passed, as did **28 focused cursor cases**. Eight new cases
+cover synchronous/delayed completion, cancellation and retry, fault fallback,
+reseek with an outstanding read, draining disposal, range-bound cleanup, and
+retained payloads. Independent source review found no correctness blocker.
+
+The fixed nine-case comparison passed all existing regression guards and its
+new requirement of at least **5% lower allocation in both wide primary-key
+pairs**. It used matched Storage builds, an unchanged common harness and other
+runtime DLLs, **650 frozen inputs, 36 serial processes, 100,000 measured queries,
+and 29,640 warmups**. All values, checksums, fixture copies, and reader-cleanup
+checks passed. No measured run was retried or excluded; normal desktop
+conditions applied.
+
+| 4,096-row primary-key comparison | Pair 1 | Pair 2 |
+|---|---:|---:|
+| Allocated bytes/query, control to candidate | 179,851 to 170,710 | 179,992 to 170,700 |
+| Allocation change | -5.08% | -5.16% |
+| Median latency, control to candidate | 734.2 to 735.9 us | 736.1 to 740.1 us |
+| Median latency change | +0.23% | +0.54% |
+
+This establishes a local allocation improvement, **not a latency speedup**.
+All median/allocation ratios remained within the 5% per-pair regression guard;
+the largest median increase was 4.89% for the 65-row primary-key second pair.
+Individual tails varied: the 64-row primary-key second-pair P99 rose 32.77%,
+while its first pair fell 13.85%, passing the unchanged rule that flags P99
+only when both pairs exceed 10%. Independent raw-result recomputation verified
+all 36 runs and 18 pairs. Release-wide performance qualification remains
+separate. Evidence is retained in `.tmp/read-ahead-investigation-20261005`.
+
 ## October 5, 2026 Coercion Allocation Guard Protected from Background GC
 
 The intermittent coercion allocation assertion was investigated separately

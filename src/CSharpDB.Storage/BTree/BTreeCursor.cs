@@ -251,9 +251,11 @@ public sealed class BTreeCursor : IAsyncDisposable
 
         if (_prefetchedLeafTask is not null && _prefetchedLeafPageId == _currentPageId)
         {
+            bool consumedPrefetch = false;
             try
             {
                 _currentLeafPage = await _prefetchedLeafTask.WaitAsync(ct);
+                consumedPrefetch = true;
             }
             catch (OperationCanceledException)
             {
@@ -265,7 +267,17 @@ public sealed class BTreeCursor : IAsyncDisposable
             }
             finally
             {
-                ClearPrefetchedLeaf();
+                if (consumedPrefetch)
+                {
+                    // The read has finished. Keep its uncancelled source so the
+                    // next prefetch can reuse the cancellation registrations.
+                    _prefetchedLeafPageId = PageConstants.NullPageId;
+                    _prefetchedLeafTask = null;
+                }
+                else
+                {
+                    ClearPrefetchedLeaf();
+                }
             }
         }
         else
@@ -315,8 +327,12 @@ public sealed class BTreeCursor : IAsyncDisposable
             return;
         }
 
+        // Never replace a still-owned read with one using the same source.
+        if (_prefetchedLeafTask is not null)
+            ClearPrefetchedLeaf();
+
         _prefetchedLeafPageId = nextLeafPageId;
-        _prefetchedLeafCancellationSource = new CancellationTokenSource();
+        _prefetchedLeafCancellationSource ??= new CancellationTokenSource();
         _prefetchedLeafTask = _pager.ReadPageUncachedAsync(nextLeafPageId, _prefetchedLeafCancellationSource.Token).AsTask();
     }
 
