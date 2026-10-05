@@ -9,8 +9,10 @@ public sealed partial class QueryPlanner
     private const int MaxPreparedSelectPlans = 256;
     // Reader planners resolve table roots through their frozen catalog view.
     internal bool EnablePreparedPrimaryKeyRanges { get; init; } = true;
-    private readonly Dictionary<PreparedSelectTemplate, PreparedIndexPlan?> _preparedSelectPlans = new();
-    private readonly Queue<PreparedSelectTemplate> _preparedSelectPlanOrder = new();
+    private Dictionary<PreparedSelectTemplate, PreparedIndexPlan?>? _preparedSelectPlans;
+    private Dictionary<PreparedSelectTemplate, PreparedIndexPlan?> PreparedSelectPlans => _preparedSelectPlans ??= new();
+    private Queue<PreparedSelectTemplate>? _preparedSelectPlanOrder;
+    private Queue<PreparedSelectTemplate> PreparedSelectPlanOrder => _preparedSelectPlanOrder ??= new();
 
     private QueryResult ExecutePreparedSelect(PreparedSelectStatement execution)
     {
@@ -19,14 +21,14 @@ public sealed partial class QueryPlanner
         if (_cteData is not null || HasTemporaryTables || PhysicalPlanCapture.IsActive)
             return ExecuteSelect(execution.BindLiterals());
 
-        bool hit = _preparedSelectPlans.TryGetValue(template, out PreparedIndexPlan? plan);
+        bool hit = PreparedSelectPlans.TryGetValue(template, out PreparedIndexPlan? plan);
         if (!hit)
         {
             plan = TryPrepareIndexPlan(template);
-            _preparedSelectPlans.Add(template, plan);
-            _preparedSelectPlanOrder.Enqueue(template);
-            if (_preparedSelectPlans.Count > MaxPreparedSelectPlans)
-                _preparedSelectPlans.Remove(_preparedSelectPlanOrder.Dequeue());
+            PreparedSelectPlans.Add(template, plan);
+            PreparedSelectPlanOrder.Enqueue(template);
+            if (PreparedSelectPlans.Count > MaxPreparedSelectPlans)
+                _preparedSelectPlans?.Remove(PreparedSelectPlanOrder.Dequeue());
         }
         if (plan is null) return ExecuteSelect(execution.BindLiterals());
 
@@ -168,8 +170,8 @@ public sealed partial class QueryPlanner
 
     private void ClearPreparedSelectPlans()
     {
-        _preparedSelectPlans.Clear();
-        _preparedSelectPlanOrder.Clear();
+        _preparedSelectPlans?.Clear();
+        _preparedSelectPlanOrder?.Clear();
     }
 
     // A null secondary index denotes access through the physical integer primary key.

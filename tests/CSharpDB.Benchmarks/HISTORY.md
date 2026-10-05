@@ -2,6 +2,177 @@
 
 This file preserves the benchmark release logs, failed-run notes, investigation records, and detailed historical snapshots that used to live in `README.md`. The main README is now intentionally user-first and release-stable; use this file when investigating why a past benchmark number changed or why a specific run was not promoted.
 
+## October 4, 2026 Ordinary Primary-Key Ranges (Local SELECT Follow-Up)
+
+The arithmetic-projection and join controls from the planner-setup investigation
+allocated roughly 410-446 KB to return four rows. Separate instrumented probes
+located about 94-96% of those allocations in row consumption. Allocation stacks
+showed table-cursor traversal, page reads, and read-ahead. Expression compilation
+builds delegate closures; it was not the main cost in these fixtures.
+
+These ordinary SELECT shapes bypass the prepared-template path and previously
+kept a full table scan for primary-key inequalities. An arithmetic projection
+can fill a 64-row internal batch before returning rows. When its filter matches
+only four rows, it can traverse the entire 10,000-row table despite `LIMIT 4`.
+The join's ordering also exhausts its input. The fix adds a bounded physical
+integer primary-key source after existing lookup selection fails, in general
+SELECT and normal-table join-leaf predicate pushdown.
+
+The planner reuses exact-integer range extraction and the existing range
+operator. Residual predicates run before ordering/TopN, projection, and LIMIT.
+Ascending PK order is preserved; other sorts keep the bounded input. Eligibility
+uses the actual catalog's physical single-column PK, excludes CTE shadowing and
+backed/composite keys, and resolves the tree through the current reader pager.
+Mutation selection and prepared execution are unchanged. The tested mixed NULL
+residual now correctly returns no rows; the baseline mishandled that residual.
+Fractional bounds retain the existing strict INTEGER type error.
+
+The instrumented candidate used about **31.18 KB per arithmetic query** and
+**66.88 KB per join**, versus 410.84 and 444.86 KB in the corresponding baseline
+probes. Each probe validated 2,000 measured queries after 1,040 warmups, and all
+four traces reported zero lost events. These are diagnostic process-allocation
+measurements; sampled allocation intervals are not exact attribution by type,
+and instrumented duration is not used for the performance comparison below.
+
+All **3,288 engine tests and 319 ADO tests** passed in Release, with zero build
+warnings/errors. The 27 new cases cover ordinary bounded access, aliases,
+intersected/reversed/exclusive bounds and integer extremes, residuals before
+sorting/LIMIT/OFFSET, NULL/OR/type behavior, CTE shadowing, nonphysical keys,
+joins and null extension, changing pooled parameters, overlapping readers,
+schema/root changes, commit/rollback snapshots, and serializable range conflicts.
+Independent source review found no correctness issues.
+
+The uninstrumented comparison used the previous validated lazy-planner working
+tree as its baseline (still uncommitted on `f82ed0b6`), with frozen source and
+runtime hashes. Identical harnesses ran control-forward, candidate-reverse,
+candidate-forward, control-reverse across 1/256-table catalogs. The ten prepared
+range controls were joined by arithmetic projections returning 4/256/4,096 rows
+and self joins returning 4/256 rows, all with 65 parameter sets. The fixtures
+contained 10,000 rows; every value was checked and reader disposal was timed.
+There were **272,000 measured queries** after **217,912 warmups**, under normal
+background load without tracing or readiness gates.
+
+Across both catalogs and pairs, four-row arithmetic/join queries had **94.91%
+lower median latency** and **89.32% less allocation** by geometric mean. Both
+exceeded the declared 50% objectives. Wider ordinary queries also improved in
+median latency and allocation in both pairs. Table ranges include both catalogs
+and both pairs; KB is decimal.
+
+| Ordinary query shape | Baseline median | Candidate median | Baseline allocation | Candidate allocation |
+|---|---:|---:|---:|---:|
+| 4-row arithmetic projection | 1,494.1-1,588.2 us | 70.9-71.9 us | 410.60-410.90 KB | 31.19-31.20 KB |
+| 256-row arithmetic projection | 192.7-202.8 us | 140.0-144.1 us | 64.75-64.87 KB | 52.53-52.56 KB |
+| 4,096-row arithmetic projection | 1,383.0-1,550.3 us | 1,123.3-1,155.3 us | 208.37-208.80 KB | 197.06-197.60 KB |
+| 4-row self join | 1,534.8-1,607.1 us | 85.5-94.9 us | 444.67-445.33 KB | 66.89-66.90 KB |
+| 256-row self join | 1,791.1-1,853.7 us | 358.3-376.9 us | 517.61-518.30 KB | 148.72-148.95 KB |
+
+**The original comparison did not pass its complete regression check.** Two
+prepared controls exceeded the 5% median limit in one pair: the one-table,
+65-parameter, 4,096-row range increased 7.78%, and the 256-table, 65-parameter,
+four-row range increased 8.41%. Their other pairs decreased 0.07% and 5.87%.
+No allocation or repeated-P99 regression flag occurred. Those prepared queries
+dispatch directly to the unchanged prepared path and do not execute the new
+helper; this does not establish the cause of the observed timing differences.
+
+A separate, predeclared persistence check tested only those two controls in
+candidate-forward, control-reverse, control-forward, candidate-reverse order.
+It retained the same 5% median/allocation and repeated 10% P99 limits, used 1,000
+measurements for the larger range and 10,000 for the short range per process,
+and ran once: **44,000 measured queries** after **35,620 warmups**. Both controls
+passed in both pairs; median changes ranged from a 0.84% decrease to a 0.82%
+increase, with effectively unchanged allocations. The original failed result
+is retained separately. A persistent control slowdown was not reproduced, but
+the follow-up does not turn the original full comparison into a pass or qualify
+release-wide performance.
+
+Evidence is in `.tmp/ordinary-query-setup-20261004`, with the focused comparison
+under `controls-followup`. An independent audit verified all 171 original
+inputs, raw checksums/percentiles, paired ratios, query counts, and the two
+original flags. A separate independent audit verified all 225 focused-check
+inputs and confirmed its counts, metrics, unchanged runtime binaries, and zero
+flags. Allocation totals cover measured process intervals. Harness GC
+counters include post-loop serialization and are not used as measured-loop
+counts. These results do not establish broad query or durable-write tail-latency
+gains; individual P99 values still vary.
+
+## October 4, 2026 Planner Setup (Local Allocation Follow-Up)
+
+After `f82ed0b6`, a synchronous component probe measured 2,808 allocated bytes
+for reader planner/catalog-view creation. Each planner eagerly constructed 18
+dictionaries, a hash set, two queues, and adaptive diagnostics with five bound
+delegates. Simple prepared ranges leave most of those objects unused.
+
+Planner caches and adaptive runtime diagnostics now allocate on first use.
+Cleanup, invalidation, empty diagnostics, and unused row-ID lease checks access
+nullable backing fields without creating containers. Existing comparers, cache
+limits, eviction order, allocated capacity, and planner ownership are preserved.
+The observer remains a stable planner-lifetime adapter; setting it does not
+allocate adaptive diagnostics. Each pooled query still uses its own planner
+bound to its reader snapshot.
+
+The identical component probe measured **848 bytes per planner/catalog view**,
+down **1,960 bytes (69.80%)**. Reader-session and snapshot-pager component costs
+remained 344 and 1,928 bytes. These synchronous allocation measurements are
+component costs, not complete-query performance.
+
+New regression coverage also exposed an existing trigger-invalidation bug on
+the committed baseline: after dropping and recreating a trigger, fast inserts
+could execute its old cached body. Direct simple/parsed insert entry points
+bypassed the normal schema-version check. Both now invalidate schema-sensitive
+caches before accessing them. The unchanged-version path returns immediately.
+The regression preserves the expected audit values and covers both insert
+routes, trigger removal, and generated row IDs. Other new cases cover adaptive
+observer initialization/propagation and expression/prepared metadata refresh
+through schema replacement and rollback.
+
+All **3,265 engine tests and 315 ADO tests** passed in Release, including five
+new regression cases. Both final builds had zero warnings or errors. The initial
+failure, baseline reproduction, and final passing receipts are retained. An
+independent source review found no further correctness issues.
+
+The matched pooled ADO comparison used four fresh serial processes in
+control-forward, candidate-reverse, candidate-forward, control-reverse order.
+The same harness and runtime settings covered 1/256-table catalogs, four-row
+primary-key ranges with 1/65/2,048 parameter sets, and 256/4,096-row ranges with
+65 parameter sets. Four-row arithmetic projections and self joins with 65
+parameter sets additionally exercised ordinary planner caches. Fixtures held
+10,000 rows; every query checked both returned values and included reader
+disposal in its timing. There were **267,200 measured queries** after **215,832
+warmups**. Normal background load was allowed; no tracing, readiness gate, or
+workload retry was used.
+
+Four-row prepared ranges allocated **10.01% less** by geometric mean across both
+catalog sizes and pairs, exceeding the declared 8% target. Their observed
+geometric-mean median latency was **5.36% lower**. Ranges below include every
+catalog size and pair; KB is decimal.
+
+| Query shape | Baseline median | Candidate median | Baseline allocation | Candidate allocation |
+|---|---:|---:|---:|---:|
+| 4-row prepared range | 43.1-46.7 us | 41.3-43.7 us | 18.27-18.45 KB | 16.43-16.61 KB |
+| 256-row prepared range | 97.6-139.0 us | 96.1-101.3 us | 36.60-36.85 KB | 34.75-34.80 KB |
+| 4,096-row prepared range | 783.1-796.5 us | 773.3-825.2 us | 181.17-181.30 KB | 179.19-181.09 KB |
+| 4-row arithmetic projection | 1,355.6-1,364.7 us | 1,369.3-1,391.2 us | 410.69-411.11 KB | 409.20-409.76 KB |
+| 4-row self join | 1,373.7-1,402.3 us | 1,389.0-1,405.0 us | 445.30-445.91 KB | 443.49-444.03 KB |
+
+Every case stayed within the declared 5% median/allocation regression limit.
+No case had a P99 increase above 10% in both pairs. Two single-pair P99 increases
+exceeded that threshold: the one-table arithmetic projection increased 21.89%
+(3.15% in its other pair), and the 256-table/2,048-parameter short range increased
+21.39% (decreased 5.57% in its other pair). The 256-row baseline also had one
+139.0 us median/673.0 us P99 outlier; it remains in the results. Expression
+medians increased in both pairs while remaining within the declared limit.
+These controls establish no broad latency gain for larger or more complex
+queries. They do not measure adaptive execution or durable-write performance.
+
+Evidence is in `.tmp/pooled-planner-setup-20261004`: frozen source/runtime inputs,
+component measurements, test receipts, raw durations, and comparison findings.
+An independent check verified all 156 pinned inputs and recomputed query counts,
+checksums, per-case metrics, paired ratios, and thresholds from the raw results.
+Allocation totals cover the measured process interval. Harness GC counters
+include post-loop serialization and are not used as measured-loop GC counts.
+These local results do not qualify release-wide performance or close the
+separate durable-write tail-latency diagnostics.
+
 ## October 4, 2026 Snapshot Pager Setup (Local Allocation Follow-Up)
 
 After `b0de2b6f`, a synchronous component probe measured 3,472 allocated bytes
