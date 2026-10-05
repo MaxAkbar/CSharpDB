@@ -2,6 +2,162 @@
 
 This file preserves the benchmark release logs, failed-run notes, investigation records, and detailed historical snapshots that used to live in `README.md`. The main README is now intentionally user-first and release-stable; use this file when investigating why a past benchmark number changed or why a specific run was not promoted.
 
+## October 5, 2026 Coercion Allocation Guard Protected from Background GC
+
+The intermittent coercion allocation assertion was investigated separately
+from the LIMIT change. The .NET 10.0.12 background-GC accounting path can count
+unused allocation-buffer space as allocated bytes
+([runtime issue](https://github.com/dotnet/runtime/issues/134724)). On this
+Windows x64 host, a fixed stress probe reproduced two failures of the unchanged
+test in 1,024 calls, at 6,192 and 6,816 bytes, plus 44 positive readings from an
+allocation-free control. With concurrent GC disabled in a separate diagnostic
+process, all 1,024 calls passed and the coercion/empty controls measured zero.
+Every deliberate 64-byte allocation still measured correctly. This supports
+the failure mechanism; the original untraced 2,520-byte event cannot be
+attributed retrospectively with the same precision.
+
+`SqlTypeCoercionTests` now uses a nonparallel collection and requires a 1 MiB
+no-GC region around measurement. Admission and mandatory cleanup must succeed;
+assertions run after cleanup. The **4,096-call loop and 1,024-byte limit are
+unchanged**. A separate counter interval deliberately formats qualified-target
+strings to verify that real allocations remain detectable. Production code
+and the full test process's normal GC configuration are unchanged.
+
+The clean Release build and all **3,355 engine tests** passed, including the
+three focused coercion cases. Independent validation invoked the actual built
+test and isolated source mutations: eager formatting failed the guard at
+**262,144 bytes**, an injected exception propagated after cleanup, and one
+forced collection invalidated the no-GC region and failed the test. Every
+path restored normal GC mode and admitted a fresh region afterward. No
+threshold was relaxed, sample skipped, or validation case retried.
+
+Diagnosis and repair evidence are retained in
+`.tmp/coercion-allocation-20261005` and
+`.tmp/coercion-allocation-fix-20261005`. Earlier performance comparisons remain
+preserved; this test-only repair does not require another latency benchmark.
+
+## October 5, 2026 LIMIT Row Path Separation (Local Regression Checks Passed)
+
+The mixed-traversal correctness fix now separates ordinary row reads from
+buffered batch traversal. A non-async dispatcher checks the limit and selects
+a small row-source async helper or the existing mixed-traversal logic. This
+targets the actual prepared primary-key path: LIMIT at most four without an
+offset uses the row `QueryResult` boundary. The batch-forwarding loop remains
+unchanged.
+
+Reflection-only native diagnostics on .NET 10.0.12 x64 confirmed that the
+ordinary row async state returned to **56 bytes**, matching `92716dfa`, with
+the same fields. Its native state-machine body is 524 bytes versus 531 in
+the control; the new public dispatcher is 53 bytes. The larger mixed state
+is isolated in a separate helper. These observations establish the intended
+code shape, not the cause of previous timing differences.
+
+The unchanged nine-case comparison **passed all declared regression guards**:
+5% per-pair median/allocation limits and 10% P99 only when exceeded in both
+pairs. Matched builds reused the same harness and fixture, with **36 processes,
+100,000 measured queries, 29,640 warmups, and 2,494 frozen inputs**. Every value,
+checksum, fixture copy, and reader-cleanup check passed under normal desktop
+conditions. No measured attempt was rerun or excluded.
+
+The 4-row primary-key medians were **42.9 to 41.7 us (-2.80%)** and
+**41.6 to 41.7 us (+0.24%)**. Its allocation increase was about **8 bytes/query**
+(0.05%); the preceding unsplit candidate added about 16 bytes/query. Wide
+primary-key medians changed -0.01% and +0.15%. Individual P99 results still
+varied: the join's first pair rose 34.94%, while its second rose 7.63%, within
+the declared repeated-tail rule. This is a local regression screen, not a
+general speedup or release-wide performance qualification.
+
+All **59 focused cases** passed, including four new cases for suspended row
+cancellation/faults and empty/short sources followed by reopening. Release
+builds had zero warnings or errors. The initial engine suite passed 3,354 of
+3,355 tests: the unchanged type-coercion allocation test observed 2,520 bytes
+against its 1,024-byte allowance. That class then passed all three cases in
+isolation, and one unchanged full-suite confirmation passed **3,355 engine
+tests**; **319 ADO tests** also passed. The first failure remains preserved,
+its cause is unknown, and no assertion or runtime setting was changed.
+
+Independent raw-result recomputation confirmed all 36 runs and 18 pairs. Evidence
+is retained in `.tmp/limit-row-fastpath-20261005`, together with both earlier
+failed performance candidates. This entry records validation before the
+follow-up commit; the allocation-test investigation and repair are recorded above.
+
+## October 5, 2026 Cached LIMIT Source Classification (One Median Check Failed)
+
+The mixed-traversal follow-up was revised to cache its immutable adapter-source
+classification after physical-plan wrapping. Native-code diagnostics confirmed
+that repeated predicate helper calls disappeared. The cached bool fits existing
+padding: the committed control used 56 bytes for an uninitialized LIMIT object,
+and both correctness candidates used 64 bytes. The row async state still grew
+from 56 to 64 bytes relative to the committed control; the batch state remained
+72 bytes. These are code/layout observations, not timing or allocation-frequency
+attribution. All **3,351 engine, 319 ADO, and 55 focused tests** passed again.
+
+A new, single fixed comparison against `92716dfa` retained the same nine cases,
+36 processes, 100,000 measured queries, 29,640 warmups, and regression thresholds,
+with 2,049 frozen inputs. All correctness and allocation checks passed. The
+comparison **still failed** the 4-row primary-key median guard: **39.2 to 43.1 us
+(+9.95%)** in pair 1 and **38.2 to 40.1 us (+4.97%)** in pair 2. The other median
+and repeated-P99 guards passed, but individual tails and a wide-range control
+run varied substantially. This does not establish why earlier tails changed.
+Independent raw-result recomputation confirmed the outcome; no measured rerun
+or sample exclusion occurred.
+
+Further source tracing identified the remaining target: prepared queries with
+LIMIT at most four and no offset use the direct row boundary in
+`QueryPlanner.PreparedSelect.cs`. The expanded LIMIT row async state therefore
+lies on this measured path. Separating ordinary row delegation from mixed
+traversal is the next candidate, rather than another batch-dispatch change.
+Evidence is preserved in `.tmp/limit-latency-diagnosis-20261005`; this candidate
+was not committed or performance-qualified.
+
+## October 4, 2026 Mixed LIMIT Traversal (Correctness Passed, Latency Check Failed)
+
+After the batch-forwarding change was committed as `92716dfa`, operator tests
+reproduced the deferred cursor-ordering defect. With a 65-row source batch,
+LIMIT could return rows 0-63 as a batch and then skip buffered row 64 when
+asked for one row. A batch-to-row adapter could instead replay rows because
+its cursor and LIMIT's cursor advanced independently.
+
+The follow-up consumes buffered rows through LIMIT's existing batch position.
+Adapter-only sources use that position from the first read; exhausted direct
+sources keep their existing row delegation. A lazy owned row buffer honors
+the source's reuse flag and is detached on reuse changes and reopening.
+The intact-batch forwarding loop is unchanged. The change adds one reference
+field and checks on row reads and the small-limit path; it is a correctness
+fix, with no claimed performance improvement.
+
+The original 24 new regression cases failed 22 times on `92716dfa`. After the
+fix and an additional adapter boundary case, all **55 focused tests** passed
+(25 new and 30 existing). Full Release suites passed **3,351 engine tests and
+319 ADO tests**, with zero build warnings or errors. Independent review found
+no correctness or ownership blocker in this scope.
+
+The fixed public ADO comparison reused the preceding harness and fixture,
+with matched control/candidate Execution builds. Nine cases ran in
+control/candidate/candidate/control order: **36 processes, 100,000 measured
+queries, and 29,640 warmups**, guarded by 1,566 frozen inputs. Normal desktop
+conditions applied. Every returned value, checksum, fixture copy, and reader
+disposal check passed. There was no benefit target and no measured rerun.
+
+**The latency comparison failed its declared regression checks.**
+
+| Failed check | Pair 1 | Pair 2 |
+|---|---:|---:|
+| 4-row primary-key median (5% limit per pair) | 39.3 to 42.1 us (+7.12%) | 40.7 to 41.4 us (+1.72%) |
+| 64-row primary-key P99 (10% limit in both pairs) | +16.43% | +16.77% |
+| 4,096-row expression P99 (same rule) | +17.65% | +17.59% |
+| 4-row join P99 (same rule) | +10.13% | +41.40% |
+
+All allocation checks and the other median checks passed. The wide primary-key
+median changed +2.26% and -0.87%, within its guard. An independent audit
+recomputed all 36 raw runs and 18 pairs and confirmed the four flags.
+These observations do not establish whether source overhead, code generation,
+or host scheduling caused the latency differences. The correctness follow-up
+remains uncommitted and performance qualification remains open; investigate
+the small-limit path and repeated tail flags before promoting it. Prior
+benchmark evidence remains intact. New evidence is retained in
+`.tmp/limit-mixed-traversal-20261004`.
+
 ## October 4, 2026 Wide-Range Reads and LIMIT Batch Forwarding (Local Follow-Up)
 
 After `b1eb30f6` recorded the matched-build investigation, separate profiles

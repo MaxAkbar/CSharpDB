@@ -3408,23 +3408,28 @@ public sealed class LimitOperator :
 
     private readonly IOperator _source;
     private readonly int _limit;
+    private readonly bool _hasBatchBackedRowSource;
     private int _count;
     private bool _reuseCurrentBatch = true;
     private RowBatch? _currentBatch;
     private RowBatch? _ownedBatch;
+    private DbValue[]? _currentRowFromBatch;
     private int _sourceBatchRowIndex = -1;
 
     public ColumnDefinition[] OutputSchema => _source.OutputSchema;
     public bool ReusesCurrentRowBuffer => _source.ReusesCurrentRowBuffer;
-    public DbValue[] Current => _source.Current;
+    public DbValue[] Current => _currentRowFromBatch ?? _source.Current;
     public int? EstimatedRowCount => _limit >= 0 ? _limit : 0;
     IOperator IUnaryOperatorSource.Source => _source;
     IReadOnlyList<IOperator> IPhysicalOperatorChildren.PhysicalChildren => [_source];
+
+    private bool HasBatchBackedRowSource => _hasBatchBackedRowSource;
 
     public LimitOperator(IOperator source, int limit)
     {
         _source = PhysicalPlanCapture.WrapIfActive(source);
         _limit = limit;
+        _hasBatchBackedRowSource = _source is IBatchBackedRowOperator and not IBatchOperator;
     }
 
     public async ValueTask OpenAsync(CancellationToken ct = default)
@@ -3432,13 +3437,70 @@ public sealed class LimitOperator :
         _count = 0;
         _currentBatch = null;
         _ownedBatch = null;
+        _currentRowFromBatch = null;
         _sourceBatchRowIndex = -1;
         await _source.OpenAsync(ct);
     }
 
-    public async ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
+    public ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
     {
-        if (_count >= _limit) return false;
+        if (_count >= _limit) return ValueTask.FromResult(false);
+
+        // Keep ordinary row reads independent of the larger mixed-traversal state.
+        return _sourceBatchRowIndex < 0 && !HasBatchBackedRowSource
+            ? MoveNextFromRowSourceAsync(ct)
+            : MoveNextFromBatchSourceAsync(ct);
+    }
+
+    private async ValueTask<bool> MoveNextFromRowSourceAsync(CancellationToken ct)
+    {
+        _currentRowFromBatch = null;
+        if (!await _source.MoveNextAsync(ct)) return false;
+        _count++;
+        return true;
+    }
+
+    private async ValueTask<bool> MoveNextFromBatchSourceAsync(CancellationToken ct)
+    {
+        bool batchBackedRowSource = HasBatchBackedRowSource;
+        var batchSource = _sourceBatchRowIndex >= 0 || batchBackedRowSource
+            ? BatchSourceHelper.TryGetBatchSource(_source)
+            : null;
+        if (batchSource != null)
+        {
+            RowBatch sourceBatch = batchSource.CurrentBatch;
+            // An adapter has a separate row position. Keep all traversal through
+            // this operator's batch cursor so switching modes cannot replay rows.
+            while (batchBackedRowSource && _sourceBatchRowIndex + 1 >= sourceBatch.Count)
+            {
+                if (!await batchSource.MoveNextBatchAsync(ct))
+                    return false;
+
+                sourceBatch = batchSource.CurrentBatch;
+                _sourceBatchRowIndex = -1;
+            }
+
+            // A physical source already advanced past every row in this batch.
+            // Consume its buffered remainder before delegating another row read.
+            if (_sourceBatchRowIndex + 1 < sourceBatch.Count)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (!_source.ReusesCurrentRowBuffer ||
+                    _currentRowFromBatch is null || _currentRowFromBatch.Length != sourceBatch.ColumnCount)
+                {
+                    _currentRowFromBatch = sourceBatch.ColumnCount == 0
+                        ? Array.Empty<DbValue>()
+                        : new DbValue[sourceBatch.ColumnCount];
+                }
+
+                sourceBatch.CopyRowTo(_sourceBatchRowIndex + 1, _currentRowFromBatch);
+                _sourceBatchRowIndex++;
+                _count++;
+                return true;
+            }
+        }
+
+        _currentRowFromBatch = null;
         if (!await _source.MoveNextAsync(ct)) return false;
         _count++;
         return true;
@@ -3448,6 +3510,7 @@ public sealed class LimitOperator :
 
     public void SetReuseCurrentRowBuffer(bool reuse)
     {
+        _currentRowFromBatch = null;
         if (_source is IRowBufferReuseController controller)
             controller.SetReuseCurrentRowBuffer(reuse);
     }
@@ -3458,7 +3521,7 @@ public sealed class LimitOperator :
             return false;
 
         int remaining = _limit - _count;
-        if (remaining <= SmallLimitRowModeThreshold && _sourceBatchRowIndex < 0)
+        if (remaining <= SmallLimitRowModeThreshold && _sourceBatchRowIndex < 0 && !HasBatchBackedRowSource)
         {
             var smallBatch = _reuseCurrentBatch ? EnsureBatch(_source.OutputSchema.Length) : CreateBatch(_source.OutputSchema.Length);
             smallBatch.Reset();

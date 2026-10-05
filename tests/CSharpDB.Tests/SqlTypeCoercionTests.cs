@@ -1,8 +1,10 @@
+using System.Runtime.CompilerServices;
 using CSharpDB.Execution;
 using CSharpDB.Primitives;
 
 namespace CSharpDB.Tests;
 
+[Collection(SqlTypeCoercionCollection.Name)]
 public sealed class SqlTypeCoercionTests
 {
     private static readonly ColumnDefinition IntegerColumn = new()
@@ -41,21 +43,60 @@ public sealed class SqlTypeCoercionTests
             input,
             IntegerColumn,
             tableName: "bench");
+        _ = FormatQualifiedTarget("bench", IntegerColumn.Name);
 
-        long before = GC.GetAllocatedBytesForCurrentThread();
-        for (int i = 0; i < 4096; i++)
+        long allocatedBytes;
+        long positiveControlBytes;
+
+        // Background GC can inflate this counter with unused allocation-buffer space:
+        // https://github.com/dotnet/runtime/issues/134724
+        // The budget also accommodates the deliberately allocating control below.
+        Assert.True(
+            GC.TryStartNoGCRegion(1024 * 1024, disallowFullBlockingGC: false),
+            "Could not enter a no-GC region for the allocation measurement.");
+        try
         {
-            result = SqlTypeCoercion.CoerceForAssignment(
-                input,
-                IntegerColumn,
-                tableName: "bench");
-        }
+            long before = GC.GetAllocatedBytesForCurrentThread();
+            for (int i = 0; i < 4096; i++)
+            {
+                result = SqlTypeCoercion.CoerceForAssignment(
+                    input,
+                    IntegerColumn,
+                    tableName: "bench");
+            }
 
-        long allocatedBytes = GC.GetAllocatedBytesForCurrentThread() - before;
+            allocatedBytes = GC.GetAllocatedBytesForCurrentThread() - before;
+
+            // Model the eager qualified-target formatting this test guards against.
+            // The no-inline call keeps each returned string observable.
+            before = GC.GetAllocatedBytesForCurrentThread();
+            for (int i = 0; i < 4096; i++)
+                GC.KeepAlive(FormatQualifiedTarget("bench", IntegerColumn.Name));
+
+            positiveControlBytes = GC.GetAllocatedBytesForCurrentThread() - before;
+        }
+        finally
+        {
+            // A premature collection or exhausted budget invalidates the sample.
+            GC.EndNoGCRegion();
+        }
 
         Assert.True(
             allocatedBytes <= 1024,
             $"Successful assignment coercion allocated {allocatedBytes:N0} bytes.");
         Assert.Equal(42, result.AsInteger);
+        Assert.True(
+            positiveControlBytes > 1024,
+            $"The qualified-target control allocated only {positiveControlBytes:N0} bytes.");
     }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static string FormatQualifiedTarget(string tableName, string columnName)
+        => $"column '{tableName}.{columnName}'";
+}
+
+[CollectionDefinition(Name, DisableParallelization = true)]
+public sealed class SqlTypeCoercionCollection
+{
+    public const string Name = "SqlTypeCoercion";
 }
