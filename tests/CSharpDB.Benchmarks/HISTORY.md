@@ -2,6 +2,62 @@
 
 This file preserves the benchmark release logs, failed-run notes, investigation records, and detailed historical snapshots that used to live in `README.md`. The main README is now intentionally user-first and release-stable; use this file when investigating why a past benchmark number changed or why a specific run was not promoted.
 
+## October 4, 2026 Matched Prepared-Range Rebuild (Local Diagnostic)
+
+After the lazy table-scan change was committed as `d55c5d98`, a separate
+diagnostic investigated the remaining 4,096-row pooled prepared-range flags.
+Both earlier comparisons below remain failed. No product code changed during
+this investigation.
+
+Old and new Execution sources were rebuilt with one captured compiler recipe:
+the same SDK/compiler, 38 explicit sources in the same order, 172 reference
+assemblies, 10 analyzers, revision metadata, SourceLink, source paths, and output
+paths. Only `Operators.cs` differed. Independent review verified all 476 build
+inputs and PDB document checksums. All 5,040 method bodies matched between each
+historical binary and its corresponding rebuild; the two rebuilt variants
+differed only in the five expected TableScan methods. This establishes managed
+method-body agreement, not byte-identical historical binaries or JIT identity.
+
+The comparison used three arms: historical control, rebuilt control, and
+rebuilt candidate. Each process ran exactly one case against a copy of the same
+10,000-row fixture, seeded separately by the historical runtime and verified
+without WAL sidecars. This removed differences from earlier cases retaining
+connection pools and from each arm creating its own index. Every query still
+created its normal reader snapshot; warmup did not preserve a reader pager cache.
+
+Three one-table, 65-parameter cases ran in fixed historical/control/candidate/
+candidate/control/historical order: prepared ranges returning 4,096 and four
+rows, and ordinary expressions returning four rows. There were **18 processes,
+96,000 measurements, and 65,910 warmups**, with 923 inputs frozen before the
+single run. All rows, checksums, reader disposal, binary identities, and launch
+order were validated. The run used normal desktop conditions, without tracing,
+readiness gates, or retries.
+
+**Both the reconstruction and source-change comparisons passed their fixed
+checks:** neither pair exceeded the 5% median/allocation limit, and no case
+exceeded 10% P99 in both pairs. The source-change results were:
+
+| Query | Pair 1 median, control to candidate | Pair 2 median, control to candidate | Allocation change, pair 1 / pair 2 |
+|---|---:|---:|---:|
+| 4,096-row prepared range | 849.7 to 866.9 us (+2.02%) | 839.1 to 843.0 us (+0.46%) | +0.30% / -0.12% |
+| 4-row prepared range | 44.9 to 45.3 us (+0.89%) | 46.0 to 45.3 us (-1.52%) | +0.004% / -0.008% |
+| 4-row ordinary expression | 67.8 to 68.6 us (+1.18%) | 68.4 to 69.1 us (+1.02%) | -13.33% / -13.34% |
+
+The 4,096-row source-change P99 ratios increased 11.01% and 7.14%; only the
+first exceeded 10%. One reconstruction pair for the four-row range increased
+P99 by 19.93%, while the other increased 0.85%. These individual tail movements
+remain visible even though they did not meet the declared repeated-P99 rule.
+
+The earlier large prepared-range slowdown did not reproduce in this setup.
+The experiment does not distinguish which setup difference or runtime effect
+contributed to the prior failures, establish a latency improvement, or qualify
+the full optimization for release. Its expression-only allocation reduction
+of about 13.34% is distinct from the earlier 12.89% expression/join aggregate.
+Compiler recipes, raw samples, failed initial harness-build log, fixed protocol,
+and reviews are retained in `.tmp/prepared-range-latency-20261004`. Further
+optimization should first profile the remaining wide-range row consumption;
+this result provides no basis for another plan-cache or rebinding change.
+
 ## October 4, 2026 Lazy Table-Scan Batches (Local Allocation Follow-Up)
 
 After `9af89853`, allocation profiles still showed unused 64-row buffers in
