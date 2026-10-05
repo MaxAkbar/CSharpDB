@@ -2,6 +2,49 @@
 
 This file preserves the benchmark release logs, failed-run notes, investigation records, and detailed historical snapshots that used to live in `README.md`. The main README is now intentionally user-first and release-stable; use this file when investigating why a past benchmark number changed or why a specific run was not promoted.
 
+## October 5, 2026 Buffered Row Delivery (Candidate Rejected)
+
+A fresh phase diagnostic on committed `f94ce04f` confirmed that pooled ADO
+reads use the featureless `QueryResult` path. Consuming the remaining rows and
+EOF accounted for **90.08%** of instrumented phase time for a 4,096-row range.
+This identifies a broad consumption phase, not a CPU hotspot or proof that
+async dispatch dominates decoding, copying, or page reads.
+
+The candidate returned already-buffered rows synchronously from the private
+featureless helper, retaining row copying and ownership. Opening and refill
+remained async. Fifteen new contract cases passed against both the original
+and candidate implementations, covering boundaries, empty batches, suspended
+operations, exception/cancellation behavior, retained rows, and late scopes.
+Candidate Release builds had zero warnings/errors; all **3,378 engine and
+319 ADO tests** passed, including **45 focused QueryResult cases**.
+
+The unchanged nine-case public ADO harness ran **36 serial processes, 100,000
+measured queries, and 29,640 warmups**, under normal desktop conditions. Matched
+Execution builds differed only in `QueryResult.cs`; compiler inputs, other
+runtime DLLs, harness, fixture, and PDB provenance were verified. All 832 frozen
+inputs and all row/checksum/reader-cleanup checks passed. No measured run was
+retried, excluded, or replaced.
+
+| 4,096-row primary-key comparison | Pair 1 | Pair 2 |
+|---|---:|---:|
+| Median latency, control to candidate | 738.7 to 716.4 us | 731.4 to 715.4 us |
+| Median latency change | -3.02% | -2.19% |
+| Allocation change | +0.24% | +0.28% |
+
+The candidate **failed qualification**. It missed the predeclared requirement
+of at least 3% lower wide-query median in both pairs. It also failed the
+unchanged repeated-P99 guard for the four-row join: **167.0 to 213.5 us
+(+27.84%)** and **148.3 to 174.5 us (+17.67%)**. All per-pair median and
+allocation regression guards passed. The tail result is retained without
+attributing it to background activity or claiming a causal mechanism.
+
+The production change was rejected and `QueryResult.cs` restored to `f94ce04f`.
+The contract tests and complete failed comparison remain useful evidence;
+this experiment delivers **no production performance improvement**. Before
+another candidate, measure the projection/record-decoding cost separately
+from batch copying and ADO row delivery. Evidence, including the rejected
+source and versioned input resolution, is in `.tmp/row-delivery-20261005`.
+
 ## October 5, 2026 Read-Ahead Cancellation Reuse (Local Allocation Improvement)
 
 After `30c3a01c` committed the LIMIT fix and allocation-test repair, the next
