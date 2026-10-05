@@ -3411,6 +3411,7 @@ public sealed class LimitOperator :
     private int _count;
     private bool _reuseCurrentBatch = true;
     private RowBatch? _currentBatch;
+    private RowBatch? _ownedBatch;
     private int _sourceBatchRowIndex = -1;
 
     public ColumnDefinition[] OutputSchema => _source.OutputSchema;
@@ -3430,6 +3431,7 @@ public sealed class LimitOperator :
     {
         _count = 0;
         _currentBatch = null;
+        _ownedBatch = null;
         _sourceBatchRowIndex = -1;
         await _source.OpenAsync(ct);
     }
@@ -3489,73 +3491,88 @@ public sealed class LimitOperator :
     }
 
     bool IBatchOperator.ReusesCurrentBatch => _reuseCurrentBatch;
-    RowBatch IBatchOperator.CurrentBatch => _currentBatch ??= CreateBatch(_source.OutputSchema.Length);
+    RowBatch IBatchOperator.CurrentBatch => _currentBatch ??= EnsureBatch(_source.OutputSchema.Length);
 
     public void SetReuseCurrentBatch(bool reuse)
     {
         _reuseCurrentBatch = reuse;
         if (!reuse)
+        {
             _currentBatch = null;
+            _ownedBatch = null;
+        }
     }
 
     private async ValueTask<bool> MoveNextBatchFromBatchSourceAsync(IBatchOperator batchSource, CancellationToken ct)
     {
         RowBatch sourceBatch = batchSource.CurrentBatch;
-        int columnCount = sourceBatch.ColumnCount;
-        var batch = _reuseCurrentBatch ? EnsureBatch(columnCount) : CreateBatch(columnCount);
-        batch.Reset();
+        // Honor an empty buffer already exposed to a caller, but otherwise defer the
+        // owned buffer until rows actually need copying.
+        RowBatch? batch = _reuseCurrentBatch &&
+            _ownedBatch is { Count: 0 } && ReferenceEquals(_currentBatch, _ownedBatch)
+                ? _ownedBatch
+                : null;
 
-        while (batch.Count < batch.Capacity && _count < _limit)
+        while (_count < _limit)
         {
-            while (_sourceBatchRowIndex + 1 < sourceBatch.Count && batch.Count < batch.Capacity && _count < _limit)
-            {
-                _sourceBatchRowIndex++;
-                int targetRowIndex = batch.Count;
-                sourceBatch.GetRowSpan(_sourceBatchRowIndex).CopyTo(batch.GetWritableRowSpan(targetRowIndex));
-                batch.CommitWrittenRow(targetRowIndex);
-                _count++;
-            }
-
-            if (batch.Count >= batch.Capacity || _count >= _limit)
-                break;
-
             int remaining = _limit - _count;
-            if (batch.Count == 0 &&
+            if (batch is null &&
                 _sourceBatchRowIndex < 0 &&
                 sourceBatch.Count > 0 &&
+                sourceBatch.Count <= DefaultBatchSize &&
                 sourceBatch.Count <= remaining &&
                 (_reuseCurrentBatch || !batchSource.ReusesCurrentBatch))
             {
+                // Forward an intact batch before copying any rows. It is borrowed:
+                // subsequent fallback writes must use a separate owned buffer.
                 _currentBatch = sourceBatch;
                 _count += sourceBatch.Count;
                 _sourceBatchRowIndex = sourceBatch.Count - 1;
                 return true;
             }
 
+            if (_sourceBatchRowIndex + 1 < sourceBatch.Count)
+            {
+                if (batch is null || batch.ColumnCount != sourceBatch.ColumnCount)
+                {
+                    batch = _reuseCurrentBatch
+                        ? EnsureBatch(sourceBatch.ColumnCount)
+                        : CreateBatch(sourceBatch.ColumnCount);
+                    batch.Reset();
+                }
+
+                while (_sourceBatchRowIndex + 1 < sourceBatch.Count && batch.Count < batch.Capacity && _count < _limit)
+                {
+                    _sourceBatchRowIndex++;
+                    int targetRowIndex = batch.Count;
+                    sourceBatch.GetRowSpan(_sourceBatchRowIndex).CopyTo(batch.GetWritableRowSpan(targetRowIndex));
+                    batch.CommitWrittenRow(targetRowIndex);
+                    _count++;
+                }
+
+                if (batch.Count >= batch.Capacity || _count >= _limit)
+                    break;
+            }
+
             if (!await batchSource.MoveNextBatchAsync(ct))
                 break;
 
             sourceBatch = batchSource.CurrentBatch;
-            columnCount = sourceBatch.ColumnCount;
-            if (batch.ColumnCount != columnCount)
-            {
-                batch = _reuseCurrentBatch ? EnsureBatch(columnCount) : CreateBatch(columnCount);
-                batch.Reset();
-            }
-
             _sourceBatchRowIndex = -1;
         }
 
         _currentBatch = batch;
-        return batch.Count > 0;
+        if (batch is null)
+            _ownedBatch?.Reset();
+        return batch is { Count: > 0 };
     }
 
     private RowBatch EnsureBatch(int columnCount)
     {
-        if (_currentBatch is null || _currentBatch.ColumnCount != columnCount)
-            _currentBatch = CreateBatch(columnCount);
+        if (_ownedBatch is null || _ownedBatch.ColumnCount != columnCount)
+            _ownedBatch = CreateBatch(columnCount);
 
-        return _currentBatch;
+        return _ownedBatch;
     }
 
     private static RowBatch CreateBatch(int columnCount) => new(columnCount, DefaultBatchSize);

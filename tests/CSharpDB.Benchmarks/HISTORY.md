@@ -2,6 +2,84 @@
 
 This file preserves the benchmark release logs, failed-run notes, investigation records, and detailed historical snapshots that used to live in `README.md`. The main README is now intentionally user-first and release-stable; use this file when investigating why a past benchmark number changed or why a specific run was not promoted.
 
+## October 4, 2026 Wide-Range Reads and LIMIT Batch Forwarding (Local Follow-Up)
+
+After `b1eb30f6` recorded the matched-build investigation, separate profiles
+examined the remaining pooled 4,096-row read cost. Instrumented phase timings
+placed 89.36% in consumption after the first row, 7.18% in the first read
+(which can fill a batch), and 1.67% in `ExecuteReaderAsync`. These diagnostic
+timings include allocation-counter and value-validation overhead. Setup used
+5,160 bytes/query; the two reading phases accounted for about 174,920 bytes.
+
+A separate built-in device-counter probe preserved normal speculative reads
+and measured 32.12 page reads/query, including 30.12 sequential reads, totaling
+131,576 bytes. These are device API calls, including OS-cached reads; they do
+not count physical disk accesses. The first counter attempt failed its final
+open-file hash check and produced no counter report. That attempt is preserved;
+a corrected probe changed only the hash reader's file-sharing mode and source
+provenance path, retaining the fixed 650 warmups and 650 measured queries.
+
+The 10,000-query EventPipe capture reported zero lost events. Allocation stacks
+identified owned page buffers and cancellation registration for read-ahead.
+Allocation-tick interval weights do not establish exact bytes by type. Most
+thread samples were profiler safepoints or waits, so the trace does not establish
+a CPU ranking or attribute time to GC pauses. No product change was selected
+from sample counts alone.
+
+Source review found that `LimitOperator` checked whether it could forward an
+intact source batch only after its row-copy loop had consumed that batch. The
+check was unreachable. It now runs before copying, with separate storage for
+owned fallback buffers and borrowed source batches. Forwarding requires a
+fully unconsumed batch of at most 64 rows that fits the remaining limit and
+satisfies the reuse/ownership rules. Partial tails and larger source batches
+still copy. An empty buffer exposed before the first advance keeps its existing
+identity; the normal 4,096-row ADO path therefore removes 63 of 64 LIMIT copy
+loops. The added reference field slightly increases the LIMIT object size.
+
+All **3,326 engine tests and 319 ADO tests** passed in Release, with clean
+builds. The 119-case focused suite includes 30 new cases for ownership,
+retention, reuse toggles, partial tails, large source batches, reopening,
+empty inputs, cancellation, asynchronous sources, and fully consumed mixed
+row/batch traversal. Independent source review found no actionable issue in
+this scope. The pre-existing ordering problem when direct row reads follow
+a partially consumed oversized source batch remains a separate follow-up.
+
+The uninstrumented comparison used matched old/new Execution builds, identical
+dependency DLLs and harness, the same verified 10,000-row fixture, and one
+case per fresh process. Nine one-table cases with 65 parameter values ran in
+fixed control/candidate/candidate/control order: **36 processes, 100,000
+measurements, and 29,640 warmups**. All 1,188 inputs were frozen before the
+single run. Normal desktop conditions applied, with no tracing, readiness
+gates, or retries. Every returned value, checksum, and reader disposal was
+validated.
+
+**The candidate passed all fixed checks and its improvement target.** The
+4,096-row primary-key median improved **7.02%** by geometric mean across the
+two pairs, exceeding the declared 5% objective: **807.7 to 749.9 us** and
+**800.0 to 745.0 us**. Its P99 fell from 1,315.5 to 1,230.0 us and from
+1,301.0 to 1,074.8 us. Allocation changes were +0.07% and -0.18%.
+
+| Query | Median change, pair 1 | Median change, pair 2 |
+|---|---:|---:|
+| 4-row primary-key range | -0.23% | -3.50% |
+| 64-row primary-key range | +2.40% | +1.62% |
+| 65-row primary-key range | +0.64% | +4.45% |
+| 256-row primary-key range | -2.56% | -10.43% |
+| 4,096-row primary-key range | -7.16% | -6.88% |
+| 4,096-row secondary-key query | -5.14% | -4.57% |
+| 4-row ordinary expression | -2.30% | -1.68% |
+| 4,096-row ordinary expression | +1.30% | -5.49% |
+| 4-row join | +3.67% | +2.43% |
+
+Every pair stayed within the 5% median/allocation regression limits, and no
+case exceeded 10% P99 in both pairs. Individual tails still varied: the
+65-row case increased P99 by 61.32% in one pair and 6.15% in the other. Passing
+the declared repeated-P99 rule does not mean every tail measurement improved.
+This is local evidence for the LIMIT change. Earlier lazy-table-scan failures
+remain unchanged, and release-wide latency qualification remains open.
+Raw profiles, failed diagnostic evidence, matched builds, tests, protocol,
+samples, and reviews are retained in `.tmp/prepared-range-profile-20261004`.
+
 ## October 4, 2026 Matched Prepared-Range Rebuild (Local Diagnostic)
 
 After the lazy table-scan change was committed as `d55c5d98`, a separate
