@@ -24,6 +24,33 @@ internal static class SqlTypeCoercion
         if (value.IsNull)
             return value;
 
+        // These already-canonical assignments need neither conversion nor
+        // logical facet validation. All other values use the shared boundary.
+        if (column.DeclaredType is { } declaredType)
+        {
+            if (value.Type == DbType.Integer)
+            {
+                if (declaredType.Kind == SqlTypeKind.BigInt ||
+                    (declaredType.Kind == SqlTypeKind.Integer &&
+                     value.AsInteger >= int.MinValue && value.AsInteger <= int.MaxValue))
+                {
+                    return value;
+                }
+            }
+            else if (value.Type == DbType.Text && declaredType.Kind == SqlTypeKind.Text)
+            {
+                return value;
+            }
+        }
+
+        return CoerceForAssignmentSlow(value, column, tableName);
+    }
+
+    private static DbValue CoerceForAssignmentSlow(
+        DbValue value,
+        ColumnDefinition column,
+        string? tableName)
+    {
         try
         {
             // Metadata written before logical descriptors existed retains the

@@ -2,6 +2,134 @@
 
 This file preserves the benchmark release logs, failed-run notes, investigation records, and detailed historical snapshots that used to live in `README.md`. The main README is now intentionally user-first and release-stable; use this file when investigating why a past benchmark number changed or why a specific run was not promoted.
 
+## October 6, 2026 Medium Commit Tail: Direct WAL I/O Attribution
+
+A fixed diagnostic ABBA comparison used common instrumented Storage and harness
+with the retained ordinal baseline/candidate Execution DLLs: 900 commits of 1,000
+rows per process, 64 warmups, normal desktop, no retries. All 3,600 measured
+commits, 10,212 I/O records and durable reopen checks passed; there were no dropped,
+incomplete, boundary-raced or window-crossing records. This diagnostic does not
+include the later coercion optimization or replace uninstrumented qualification.
+
+Direct `RandomAccess.FlushToDisk` elapsed accounts for **99.81-99.89%** of the
+cumulative commit-wrapper flush timer. The initial runner subtraction compared
+903 policy flushes with 900 commit wrappers; its negative `wrapperMinusDirectMs`
+values are a scope mismatch, not overhead. Three extra policy flushes follow
+32-byte offset-0 maintenance writes within begin phases 243, 486 and 729.
+Matching exactly 900 foreground calls yields positive wrapper residuals of
+3.8738 / 2.1075 / 2.7436 / 2.1810 ms across the four processes (2.34-4.30 us per
+commit on average). Original outputs remain unchanged.
+
+| Slot | Commit P95 | Commit P99 | Direct flush P99 | Commits >5 ms |
+|---|---:|---:|---:|---:|
+| 0 baseline | 3.5867 ms | 4.4707 ms | 3.8490 ms | 6 |
+| 1 candidate | 2.9733 ms | 3.5761 ms | 3.2599 ms | 3 |
+| 2 candidate | 3.2831 ms | 4.3267 ms | 3.6008 ms | 4 |
+| 3 baseline | 3.0081 ms | 4.1241 ms | 3.8883 ms | 8 |
+
+Candidate commit P95 changes are -17.10% and +9.14%; direct flush occupies
+85.60-94.29% of >5 ms commit time. Both arms retain write-related and other
+residuals. Every operation's write offsets and lengths match across all four
+processes: 1,647 foreground writes / 62,714,640 bytes and exactly 900 foreground
+flushes. The candidate has shorter median inter-flush gaps in both pairs, but no
+controlled cadence experiment establishes a timing-mediated mechanism.
+
+The earlier both-pair diagnostic P95 regressions remain recorded; their direction
+did not consistently repeat in this differently instrumented study. No candidate-
+specific I/O shape mechanism or causal host/device explanation is established.
+Elapsed around the direct call includes runtime/OS/scheduling effects; it is not
+pure device service time. No production Storage change is adopted.
+
+Evidence: `.tmp/medium-wal-io-attribution-20261006/Findings.md`, `Findings.json`,
+raw per-operation timestamps and `probe/io.json` records. All samples retained.
+
+## October 6, 2026 Canonical Assignment Fast Paths: Qualified and Adopted
+
+`SqlTypeCoercion.CoerceForAssignment` now returns already-canonical values for
+declared BIGINT with an integer value, INTEGER with an in-range integer value,
+and TEXT with a text value. The column/null guards and original conversion and
+error-wrapping body remain; all other assignments use that body through a private
+helper. Legacy metadata, BLOB/bit metadata, facets, coercion order, NOT NULL/CHECK
+order and partial row mutation behavior are preserved. Actual JIT inlining was
+not inspected; the measured result below is an end-to-end improvement.
+
+The isolated candidate passed 183 existing Release cases across 12 relevant
+classes. Another 18 regression cases passed against both baseline and candidate,
+covering integer extrema and exact failures, text code units/reference identity,
+numeric fallback, argument guards, mixed-row failure precedence and mutation,
+and logical versus legacy BLOB behavior. Both isolated builds had zero warnings.
+
+The fixed comparison used the original uninstrumented durable harness with
+900 measured commits of 10,000 rows per process, 16 warmups, and ABBA ordering.
+The baseline is the qualified, committed column-ordinal implementation. Only
+Execution differed between paired runtimes. Each pair required insertion-median
+improvement of at least 3%, whole-operation P50/P95 increases within 5%, and
+allocation increases within 1%; P99 could not exceed +10% in both pairs, and
+median paired throughput had to be nonnegative with and without final drain.
+
+| Pair | Insertion median change | Whole-operation P50 | P95 | P99 | Throughput including drain |
+|---|---:|---:|---:|---:|---:|
+| Baseline then candidate | -11.17% | -7.17% | -8.02% | -2.57% | +7.74% |
+| Candidate then baseline | -8.55% | -7.39% | -2.37% | -9.60% | +5.27% |
+
+Median paired throughput including drain improved 6.50%. Allocation remained
+approximately 584 KB per commit, and all large slots ended with the same
+17,551,232-byte WAL extent. These numbers apply to the measured integer/text
+batch workload, not every SQL type or assignment call site.
+
+The fixed 1,000-row and single-row guards passed. Medium P95 improved
+18.92% / 16.49%, P99 improved 31.69% / 8.15%, and throughput including drain
+improved 11.41% / 9.05%. Single-row P50 improved 3.05% / 4.93%, throughput
+including drain improved 4.81% / 4.17%, and P99 changed -2.96% / +14.81%.
+The one-pair single-row tail regression is retained. Smaller-write rejection
+requires the same P50, P99, allocation or throughput threshold to fail both
+pairs; P95 is reported separately. This does not establish a general tail fix.
+
+All 12 processes / 27,200 measured commits / 39.62 million measured rows passed
+exact count/checksum durable reopen, including warmups. No measured retries,
+sample exclusions, idle gates, unrelated process termination or competing builds
+or tests were used. All samples and maxima are retained in the evidence.
+
+The exact candidate source and 18 regression cases were then applied to the
+product. The benchmark/crash harness, engine and ADO outputs were rebuilt in
+Release before tests. All 3,478 engine and 325 ADO tests passed: 3,803 total,
+zero failures/skips. Builds had zero warnings except the existing xUnit1069
+warning in unchanged PooledMemoryMappedSnapshotTests.cs:14. Rebuilt Engine and
+Execution DLL hashes matched across all three outputs. A final product-binary
+correctness smoke durably reopened 180,000 rows with checksum 16,200,090,000.
+
+Evidence and binary/source hashes are in
+`.tmp/assignment-coercion-fastpath-20261006`. The earlier ordinal commit-tail
+investigation remains a separate open issue; coercion does not alter WAL flush
+semantics. Unrelated work and rejected experiments remain preserved.
+
+## October 6, 2026 Medium Commit Tail: Flush-Path Diagnostic
+
+A fixed ABBA diagnostic reused the earlier ordinal comparison's exact frozen
+baseline/candidate binaries, 64 warmups and 900 commits of 1,000 rows per process.
+Trace mode captures per-operation diagnostic snapshots and is separate from
+performance qualification. All 3,600 measured operations passed durable reopen.
+
+Both candidate whole-operation P95s worsened: +24.75% / +28.03%. Commits above
+4 ms occurred 24 / 114 / 131 / 15 times in ABBA order; above 5 ms, 15 / 60 / 63 / 5.
+Durable-flush-path elapsed time accounts for 94.48% / 84.01% of the candidate
+time spent in commits above 5 ms. WAL-append timers contain flush/publication;
+the analysis subtracts nested intervals rather than adding overlapping timers.
+
+The original 716-726 burst did not recur, but baseline slot 0 had an 11-operation
+flush-dominated burst at 565-575. This does not explain the candidate's more
+frequent slow commits. Candidate slot 2 also had a 21.2240 ms commit with
+16.0375 ms append residual and 5.0478 ms flush time. Total P99 observations can
+instead involve insertion outliers, so not every total tail is a flush stall.
+
+The source path ends at DurableWalFlushPolicy.FlushCommitAsync and
+RandomAccess.FlushToDisk. Its current timer also includes counter/observer
+bookkeeping. These observations locate elapsed time but establish neither the
+underlying cause nor host interference. All samples, checkpoint observations,
+matched quantile samples and residuals are preserved in
+`.tmp/medium-commit-tail-20261006`. The next diagnostic separates the direct
+flush call and preceding WAL write size/offset/duration, retaining durability.
+
 ## October 6, 2026 Statement Column Ordinal Reuse: Corrected, Qualified and Adopted
 
 Bare simple inserts now resolve primary-key and rowversion column positions
