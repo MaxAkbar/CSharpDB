@@ -2,6 +2,72 @@
 
 This file preserves the benchmark release logs, failed-run notes, investigation records, and detailed historical snapshots that used to live in `README.md`. The main README is now intentionally user-first and release-stable; use this file when investigating why a past benchmark number changed or why a specific run was not promoted.
 
+## October 6, 2026 Statement Column Ordinal Reuse: Corrected, Qualified and Adopted
+
+Bare simple inserts now resolve primary-key and rowversion column positions
+once per statement and pass them through the row helpers. Coercion, validation,
+identity allocation, shared row-ID observations and rowversion generation still
+run per row. There is no cross-statement schema cache. Only `QueryPlanner.cs`
+changed in production source.
+
+This corrects the isolated v1 candidate's extra fallback scan. An optional known
+rowversion position is used when available; other paths discover it at the
+original validation point. A four-case counting probe compared the product,
+rejected v1 and corrected v2. On explicit-column inserts, reads of the four-column
+schema changed **7 → 11 → 7** for both absent and omitted rowversion columns;
+explicit rowversion rejection changed **5 → 9 → 5** with identical error code
+and message. Full-row fallback remained at four reads. This is exact helper
+access accounting, not a timing comparison. **180 existing Release tests passed**
+across all 11 requested identity, rowversion, constraint, concurrency, type and
+row-buffer classes. Candidate and probe builds had zero warnings/errors.
+
+The corrected candidate independently passed the **unchanged acceptance limits**
+from the earlier failed screen. The original uninstrumented durable harness ran
+900 measured commits of 10,000 rows, with 16 warmups, in fixed ABBA order. Only
+Execution differed between paired runtime directories. Each pair had to improve
+insertion median by at least 3%, keep whole-operation P50/P95 increases within
+5% and allocation increases within 1%; the same P99 metric could not exceed
+10% in both pairs, and median paired throughput had to be nonnegative with
+and without final drain.
+
+| Pair | Insertion median before → after | Insertion change | Whole-operation P50 change | P95 change | P99 change | Throughput incl. drain change |
+|---|---:|---:|---:|---:|---:|---:|
+| Baseline then candidate | 6.77985 → 5.9786 ms | -11.82% | -7.41% | -5.07% | -2.77% | +8.27% |
+| Candidate then baseline | 6.4641 → 5.9749 ms | -7.57% | -3.83% | +0.68% | +3.63% | +2.75% |
+
+Median paired throughput including drain improved **5.51%**. Allocation remained
+approximately 584 KB per commit. All four large slots ended with the same
+17,551,232-byte WAL extent; maxima were 48.24–56.77 ms. These results support
+the measured large-batch improvement, not a general tail-latency claim.
+
+The fixed smaller-write guards also passed in ABBA order: 900 commits of 1,000
+rows and 5,000 single-row commits per process. The 1,000-row P99 changes were
+**-9.99% and +34.66%**; second-pair P95 also increased **11.20%**. Retain those
+regressions: the predeclared smaller-write guard rejects a median/P99/allocation
+or throughput limit only when the same metric fails both pairs, and P95 is
+reported separately. Its P50 improved 1.60–2.68%, and throughput including drain
+changed +4.14% and +0.01%. Single-row P50 increased 0.25–0.29%, P99 decreased
+0.57–1.66%, and throughput including drain decreased 0.21–0.29%, within the
+fixed limits. No cause is established for the smaller-batch tail differences.
+
+All **12 comparison processes / 27,200 measured commits / 39.62 million measured
+rows** passed exact count/checksum durable reopen, including warmup rows. Runs
+used the normal desktop, with no idle gates, unrelated process termination,
+competing builds/tests, measured retries or discarded samples. The rejected v1
+screen and its original evidence remain unchanged.
+
+After applying the exact candidate source, the crash harness, engine and ADO
+test outputs were rebuilt in Release. **3,460 engine + 325 ADO = 3,785 tests
+passed**, with no failures or skips. The crash-harness and engine builds had
+zero warnings; ADO reported only the preexisting xUnit1069 timeout-token warning
+in unchanged `PooledMemoryMappedSnapshotTests.cs:14`. All three outputs used the
+same rebuilt Engine and Execution DLLs. A final correctness-only smoke on the
+product binaries durably reopened 180,000 rows with checksum 16,200,090,000.
+
+Evidence, source snapshots, all samples, test results and final binary hashes
+are sealed in `.tmp/insert-column-ordinals-v2-20261006`. Unrelated work and prior
+experimental WAL changes are preserved separately from this adopted change.
+
 ## October 6, 2026 Row-ID Observer Allocation Fix: Confirmed and Adopted
 
 `Database.ObserveSharedNextRowId` now passes the observed ID as explicit state
