@@ -609,8 +609,9 @@ public sealed partial class Database : IAsyncDisposable
         {
             _sharedNextRowIdHints.AddOrUpdate(
                 tableName,
-                nextRowId,
-                (_, existing) => Math.Max(existing, nextRowId));
+                static (_, observed) => observed,
+                static (_, existing, observed) => Math.Max(existing, observed),
+                nextRowId);
         }
     }
 

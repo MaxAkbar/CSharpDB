@@ -2,6 +2,132 @@
 
 This file preserves the benchmark release logs, failed-run notes, investigation records, and detailed historical snapshots that used to live in `README.md`. The main README is now intentionally user-first and release-stable; use this file when investigating why a past benchmark number changed or why a specific run was not promoted.
 
+## October 6, 2026 Row-ID Observer Allocation Fix: Confirmed and Adopted
+
+`Database.ObserveSharedNextRowId` now passes the observed ID as explicit state
+to cached static `ConcurrentDictionary.AddOrUpdate` factories. This removes
+the previously measured **88 bytes per observation** from a captured closure
+and delegate. The existing lock, argument checks, case-insensitive key handling
+and maximum-hint semantics are unchanged. Only this method changed in product
+source; no checkpoint, WAL-format or durability policy changed.
+
+The preceding 300-commit screen remains a recorded failure: its second pair
+exceeded the 5% whole-operation P95 limit by reporting +6.06%. A separately
+declared confirmation used the **exact same candidate, baseline and timing
+harness binaries**, with 900 measured commits of 10,000 rows per process and
+16 warmups. Eight fresh processes ran in ABBA/BAAB order, producing four adjacent
+pairs with balanced direction. Increasing the count gives 45 observations in
+the upper five percent of each process instead of 15 and crosses more checkpoint
+generations. The same median/P95 limits applied to every pair; no failed slot
+was retried, excluded or replaced, and no source or threshold was tuned.
+
+All four pairs passed the large-workload gates:
+
+| Pair / slots (candidate, baseline) | P50 change | P95 change | P99 change | Throughput incl. drain change | Allocation change |
+|---|---:|---:|---:|---:|---:|
+| 1 / (1, 0) | -3.80% | -1.73% | -0.86% | +3.47% | -60.10% |
+| 2 / (2, 3) | -4.50% | -3.38% | -1.30% | +4.96% | -60.10% |
+| 3 / (4, 5) | -6.40% | -3.10% | -3.15% | +14.27% | -60.10% |
+| 4 / (7, 6) | -4.62% | -0.84% | -2.12% | +4.49% | -60.10% |
+
+Allocation fell from approximately **1.464 MB to 0.584 MB per commit**; median
+paired throughput including final drain improved **4.72%**. The largest
+throughput change includes a retained **227.85 ms baseline maximum** in slot 5;
+the other baseline maxima were 45.55–48.44 ms and candidate maxima were
+47.37–52.92 ms. Do not interpret the largest throughput pair as the typical
+gain or this result as removal of the intermittent extreme tail. Every large
+slot ended with the same 17,551,232-byte WAL extent before final drain.
+
+The fixed smaller-write guards also passed in ABBA order: 900 measured commits
+of 1,000 rows, then 5,000 single-row commits per process. The 1,000-row pairs
+reduced allocations by 59.24–59.25% and P50 by 1.31–1.54%; P99 increased
+**34.82% and 7.56%** (4.9374 → 6.6565 ms and 4.6399 → 4.9905 ms). That isolated
+P99 miss is retained: the predeclared guard rejects the same metric exceeding
+10% in both pairs, which did not occur. Single-row allocation decreased by
+3.52–3.58%, P50 increased 0.34–0.73%, P99 increased 1.68–4.01%, and throughput
+including drain decreased 0.99–1.44%, all within the fixed limits.
+
+All **16 comparison processes / 30,800 measured commits / 75.62 million measured
+rows** passed exact count/checksum durable reopen. Runs used the normal desktop,
+with no idle gates, unrelated process termination or competing builds/tests.
+This larger fixed confirmation supports adoption; it does **not** establish why
+the preceding short screen missed P95 or attribute it to host noise.
+
+After applying the exact tested source change, the crash harness, engine-test
+and ADO-test outputs were rebuilt in Release. **3,460 engine + 325 ADO = 3,785
+tests passed**, with no failures or skips. The engine/crash-harness builds had
+zero warnings; the ADO build reported the existing xUnit1069 timeout-token
+warning in unchanged `PooledMemoryMappedSnapshotTests.cs:14`. All three outputs
+used the same rebuilt Engine DLL. A correctness-only smoke on the final product
+binaries durably reopened all 180,000 rows with the exact checksum.
+
+The first adoption-script guard stopped before any source edit or build because
+the saved method and source had different line endings. Its corrected matcher
+preserves the source's line endings and all bytes outside the method; the failed
+setup and correction are retained. No measured benchmark was rerun for that fix.
+
+Evidence is sealed in `.tmp/row-id-latency-confirmation-20261006`, including the
+fixed protocol, every capture, prior failed-screen integrity checks, source
+snapshots, full test logs and final binary hashes. Unrelated changes and earlier
+experimental WAL work are preserved separately from this adopted fix.
+
+## October 6, 2026 Insert Profiling and Row-ID Observer Allocation Candidate
+
+The next investigation split the existing 10,000-row insertion phase into
+reusable-row filling and batch execution. A normal-desktop diagnostic process
+ran 16 warmup and 300 measured durable commits with the same schema, values,
+4096-frame preset, final drain and exact durable reopen as the prior workload.
+Filling rows accounted for **2.36%** of insertion-phase time and allocated
+**zero thread-local bytes** after warmup; execution accounted for the rest.
+The diagnostic timers are not an optimization comparison.
+
+A separate 300-commit EventPipe capture passed exact durable reopen and marker
+validation with **zero lost events**, 2,320 managed thread samples and 4,103
+allocation ticks, all with stacks. Of those allocation ticks, **2,467** pointed
+to `Database.ObserveSharedNextRowId`. Source review found that its `AddOrUpdate`
+lambda captures `nextRowId`, creating a closure and delegate for each explicit
+primary key. Sampled interval weights are not exact bytes by type, and managed
+thread presence does not establish a CPU ranking.
+
+An isolated Engine candidate replaces that captured callback with cached static
+factories and an explicit `long` argument. It preserves the existing lock,
+argument checks, case-insensitive dictionary and maximum-hint semantics. No
+other product source differed. A warmed, synchronous bound-delegate probe of
+100,000 observations measured **88 bytes/call before and zero after**, checking
+that lower/zero/negative observations did not lower the final hint. **93 existing
+Release identity, insert, constraint and concurrency tests passed** against the
+isolated candidate. All diagnostic/candidate builds had zero warnings/errors.
+
+The allocation result held in the original uninstrumented durable harness, but
+the candidate **did not pass the whole-operation latency screen**. Two 80-commit
+smokes preceded a fixed ABBA comparison, with 300 measured 10,000-row commits
+per slot. All six exact durable reopens passed. Dependencies and harness bytes
+were identical except Engine; no measured process was retried or excluded.
+
+| Pair | Allocation/commit before → after | Insertion median before → after | Whole-operation P95 before → after | Throughput incl. drain change |
+|---|---:|---:|---:|---:|
+| Baseline then candidate | 1,468,609 → 588,663 B | 6.6498 → 6.1970 ms | 22.2188 → 19.8405 ms | +9.62% |
+| Candidate then baseline | 1,468,630 → 588,596 B | 6.5313 → 6.3534 ms | 19.7425 → 20.9389 ms | -1.62% |
+
+Allocation fell **59.92% in both pairs**, approximately 880 KB per commit.
+Insertion medians improved **6.81% and 2.72%**; whole-operation medians improved
+5.23% and 0.50%. However, second-pair whole-operation P95 increased **6.06%**,
+above the fixed 5% limit for either pair. P99 changed -8.68% and +8.67%.
+The other large-screen gates passed, including median paired throughput, but
+that P95 miss stopped the experiment before smaller-workload guards or full
+candidate qualification. No timing cause is established: the phase distributions
+and individual P95 operations are retained without attributing the miss to the
+host, checkpoint scheduling or the optimization itself.
+
+Keep the allocation fix as a promising isolated candidate, not an adopted
+performance change. Production sources and qualified binaries remain unchanged.
+Next qualification must address the whole-operation latency miss before shipping
+it; do not erase this result with a favorable rerun or silently relax its gate.
+Evidence: `.tmp/insert-loop-profile-20261006` contains the profile and
+`.tmp/row-id-observer-20261006` contains the candidate, focused tests, exact
+allocation probe and all paired captures. Prior work and unrelated edits are
+preserved; nothing from this phase has been committed.
+
 ## October 5, 2026 Retained-WAL Compaction I/O Attribution
 
 Four fixed diagnostic baseline captures completed with exact I/O accounting and
