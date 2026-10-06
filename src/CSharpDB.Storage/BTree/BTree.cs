@@ -117,7 +117,7 @@ public sealed class BTree
         var page = await pager.GetPageAsync(pageId, ct);
         var sp = new SlottedPage(page, pageId);
         sp.Initialize(PageConstants.PageTypeLeaf);
-        await pager.MarkDirtyAsync(pageId, ct);
+        await pager.MarkDirtyAsync(pageId, sp.Buffer, ct);
         return pageId;
     }
 
@@ -703,7 +703,7 @@ public sealed class BTree
                 Span<byte> rootCell = stackalloc byte[13];
                 WriteInteriorCell(rootCell, _rootPageId, result.SplitKey);
                 sp.InsertCell(0, rootCell);
-                await _pager.MarkDirtyAsync(newRootId, ct);
+                await _pager.MarkDirtyAsync(newRootId, sp.Buffer, ct);
 
                 _rootPageId = newRootId;
                 _pager.RecordBTreeRootSplit(_logicalResourceName);
@@ -791,7 +791,7 @@ public sealed class BTree
                 Span<byte> rootCell = stackalloc byte[13];
                 WriteInteriorCell(rootCell, _rootPageId, result.InsertResult.SplitKey);
                 sp.InsertCell(0, rootCell);
-                await _pager.MarkDirtyAsync(newRootId, ct);
+                await _pager.MarkDirtyAsync(newRootId, sp.Buffer, ct);
 
                 _rootPageId = newRootId;
                 _pager.RecordBTreeRootSplit(_logicalResourceName);
@@ -1160,7 +1160,7 @@ public sealed class BTree
                 return false;
 
             overflowInstallation?.MarkInstalled();
-            await _pager.MarkDirtyAsync(pageId, ct);
+            await _pager.MarkDirtyAsync(pageId, sp.Buffer, ct);
             return true;
         }
 
@@ -1173,7 +1173,7 @@ public sealed class BTree
                 return false;
 
             overflowInstallation?.MarkInstalled();
-            await _pager.MarkDirtyAsync(pageId, ct);
+            await _pager.MarkDirtyAsync(pageId, sp.Buffer, ct);
             return true;
         }
         finally
@@ -1355,7 +1355,7 @@ public sealed class BTree
                     payloadIsOverflow))
                 {
                     overflowInstallation?.MarkInstalled();
-                    await _pager.MarkDirtyAsync(pageId, ct);
+                    await _pager.MarkDirtyAsync(pageId, sp.Buffer, ct);
                     return new ReplaceResult(
                         found: true,
                         new InsertResult { Split = false },
@@ -1522,8 +1522,8 @@ public sealed class BTree
                 {
                     overflowInstallation?.MarkInstalled();
                     sp.RightChildOrNextLeaf = appendPageId;
-                    await _pager.MarkDirtyAsync(pageId, ct);
-                    await _pager.MarkDirtyAsync(appendPageId, ct);
+                    await _pager.MarkDirtyAsync(pageId, sp.Buffer, ct);
+                    await _pager.MarkDirtyAsync(appendPageId, appendSp.Buffer, ct);
                     _pager.RecordBTreeLeafSplit(_logicalResourceName, rightEdgeSplit);
                     UpdateRightEdgeLeafHint(appendPageId, appendSp);
                     long appendSplitKey = ReadLeafCellKey(newCell.AsSpan(0, newCellLength));
@@ -1592,8 +1592,8 @@ public sealed class BTree
                     overflowInstallation?.MarkInstalled();
             }
 
-            await _pager.MarkDirtyAsync(pageId, ct);
-            await _pager.MarkDirtyAsync(newPageId, ct);
+            await _pager.MarkDirtyAsync(pageId, sp.Buffer, ct);
+            await _pager.MarkDirtyAsync(newPageId, newSp.Buffer, ct);
             _pager.RecordBTreeLeafSplit(_logicalResourceName, rightEdgeSplit);
 
             if (rightEdgeSplit)
@@ -1685,7 +1685,7 @@ public sealed class BTree
 
         if (sp.InsertCell(afterChildIdx, cell))
         {
-            await _pager.MarkDirtyAsync(pageId, ct);
+            await _pager.MarkDirtyAsync(pageId, sp.Buffer, ct);
             return new InsertResult { Split = false };
         }
 
@@ -1751,8 +1751,8 @@ public sealed class BTree
             for (int i = mid + 1; i < totalCellCount; i++)
                 newSp.InsertCell(i - mid - 1, splitCellBuffer.AsSpan(i * interiorCellSize, interiorCellSize));
 
-            await _pager.MarkDirtyAsync(pageId, ct);
-            await _pager.MarkDirtyAsync(newPageId, ct);
+            await _pager.MarkDirtyAsync(pageId, sp.Buffer, ct);
+            await _pager.MarkDirtyAsync(newPageId, newSp.Buffer, ct);
             _pager.RecordBTreeInteriorSplit(_logicalResourceName, rightEdgeSplit);
 
             return new InsertResult { Split = true, SplitKey = promotedKey, NewPageId = newPageId };
@@ -1843,7 +1843,7 @@ public sealed class BTree
             byte[]? deletedOverflowReference = CopyOverflowReference(sp, idx);
             sp.DeleteCell(idx);
             sp.Defragment();
-            await _pager.MarkDirtyAsync(pageId, ct);
+            await _pager.MarkDirtyAsync(pageId, sp.Buffer, ct);
             bool underflow = !isRoot && sp.CellCount < MinLeafCells;
             return new DeleteResult(deleted: true, underflow, deletedOverflowReference);
         }
@@ -1934,9 +1934,9 @@ public sealed class BTree
                 leftSp.Defragment();
                 WriteInteriorKey(parentSp, childIndex - 1, ReadLeafKey(childSp, 0));
 
-                await _pager.MarkDirtyAsync(leftPageId, ct);
-                await _pager.MarkDirtyAsync(childPageId, ct);
-                await _pager.MarkDirtyAsync(parentPageId, ct);
+                await _pager.MarkDirtyAsync(leftPageId, leftSp.Buffer, ct);
+                await _pager.MarkDirtyAsync(childPageId, childSp.Buffer, ct);
+                await _pager.MarkDirtyAsync(parentPageId, parentSp.Buffer, ct);
                 return;
             }
         }
@@ -1962,9 +1962,9 @@ public sealed class BTree
                 rightSp.Defragment();
                 WriteInteriorKey(parentSp, childIndex, ReadLeafKey(rightSp, 0));
 
-                await _pager.MarkDirtyAsync(childPageId, ct);
-                await _pager.MarkDirtyAsync(rightPageId, ct);
-                await _pager.MarkDirtyAsync(parentPageId, ct);
+                await _pager.MarkDirtyAsync(childPageId, childSp.Buffer, ct);
+                await _pager.MarkDirtyAsync(rightPageId, rightSp.Buffer, ct);
+                await _pager.MarkDirtyAsync(parentPageId, parentSp.Buffer, ct);
                 return;
             }
         }
@@ -1986,8 +1986,8 @@ public sealed class BTree
             leftSp.RightChildOrNextLeaf = childSp.RightChildOrNextLeaf;
             RemoveInteriorKeyAndChild(parentSp, keyIndexToRemove: childIndex - 1, childIndexToRemove: childIndex);
 
-            await _pager.MarkDirtyAsync(leftPageId, ct);
-            await _pager.MarkDirtyAsync(parentPageId, ct);
+            await _pager.MarkDirtyAsync(leftPageId, leftSp.Buffer, ct);
+            await _pager.MarkDirtyAsync(parentPageId, parentSp.Buffer, ct);
             await _pager.FreePageAsync(childPageId, ct);
             return;
         }
@@ -2009,8 +2009,8 @@ public sealed class BTree
             childSp.RightChildOrNextLeaf = rightSp.RightChildOrNextLeaf;
             RemoveInteriorKeyAndChild(parentSp, keyIndexToRemove: childIndex, childIndexToRemove: childIndex + 1);
 
-            await _pager.MarkDirtyAsync(childPageId, ct);
-            await _pager.MarkDirtyAsync(parentPageId, ct);
+            await _pager.MarkDirtyAsync(childPageId, childSp.Buffer, ct);
+            await _pager.MarkDirtyAsync(parentPageId, parentSp.Buffer, ct);
             await _pager.FreePageAsync(rightPageId, ct);
         }
     }
@@ -2029,7 +2029,7 @@ public sealed class BTree
         // Collapsing a non-root interior child into one of its descendants creates mixed-height
         // siblings under the parent. Keep the underfull interior page in place until full
         // interior-node redistribution/merge exists.
-        await _pager.MarkDirtyAsync(childPageId, ct);
+        await _pager.MarkDirtyAsync(childPageId, childSp.Buffer, ct);
     }
 
     private async ValueTask CollapseRootIfNeededAsync(CancellationToken ct)
@@ -2049,7 +2049,7 @@ public sealed class BTree
             if (promotedRootPageId == PageConstants.NullPageId)
             {
                 rootSp.Initialize(PageConstants.PageTypeLeaf);
-                await _pager.MarkDirtyAsync(_rootPageId, ct);
+                await _pager.MarkDirtyAsync(_rootPageId, rootSp.Buffer, ct);
                 return;
             }
 

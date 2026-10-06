@@ -2,6 +2,683 @@
 
 This file preserves the benchmark release logs, failed-run notes, investigation records, and detailed historical snapshots that used to live in `README.md`. The main README is now intentionally user-first and release-stable; use this file when investigating why a past benchmark number changed or why a specific run was not promoted.
 
+## October 5, 2026 Retained-WAL Compaction I/O Attribution
+
+Four fixed diagnostic baseline captures completed with exact I/O accounting and
+durable-reopen checks. **None reproduced a transaction-start pause above the
+predeclared 100 ms threshold**; the longest was **77.00 ms**. This investigation
+therefore does not explain the earlier roughly 180 ms tail. No extra capture was
+added to chase that event, and no production optimization was adopted.
+
+An isolated copy of current Storage added timings around each retained-suffix
+read and write, including call start, return and post-await completion. Separate
+scopes measured metadata processing, file truncation, WAL-header rewrite,
+durability flush and index publication. Removing the diagnostic additions
+reconstructed all 143 original source files exactly. Assembly version and
+dependencies matched production; source and product build outputs were untouched.
+
+After an 80-commit smoke passed, four fresh processes each ran the historical
+10,000-row durable batch workload with 16 warmup and 300 measured commits on the
+normal desktop. Each process passed exact count/sum verification after reopening
+3,160,000 rows. The smoke reopened 960,000 rows. Every captured compaction passed
+checks for unique records, monotonic timing, sequential/nonoverlapping child
+phases, contiguous source/destination offsets and exact byte totals.
+
+The 36 measured compactions each moved about **10.46 MiB in 167 read/write
+pairs**. In total, **6,012 data reads and 6,012 data writes** each accounted for
+**394,976,160 bytes**. Per-process medians of the aggregate phase cost for one
+compaction were:
+
+| Capture | Data reads | Data writes | Truncate | WAL flush | Total compaction |
+|---|---:|---:|---:|---:|---:|
+| 0 | 10.26 ms | 10.33 ms | 3.30 ms | 8.12 ms | 33.73 ms |
+| 1 | 10.54 ms | 10.30 ms | 3.22 ms | 9.18 ms | 34.09 ms |
+| 2 | 9.59 ms | 9.07 ms | 3.00 ms | 7.85 ms | 30.61 ms |
+| 3 | 10.33 ms | 10.11 ms | 3.50 ms | 10.12 ms | 33.82 ms |
+
+Each column is an independent median; the table is not an additive decomposition
+of one selected operation. Metadata processing medians were **0.25–0.30 ms**,
+index publication **0.046–0.055 ms**, and header rewrite **0.14–0.28 ms**. The
+first header rewrite in each process was slower (**4.84–8.77 ms**); the capture
+does not establish whether JIT or another startup effect caused that difference.
+
+For data I/O, median aggregate call-dispatch time was **7.30–8.36 ms for reads**
+and **7.14–8.01 ms for writes**, versus roughly **2.18–2.57 ms** after return until
+the awaited continuation resumed. Only 7 reads and 8 writes were already complete
+at the immediately-before-await check. The longest individual data-read span was
+**2.64 ms** and data-write span **1.69 ms**. These numbers locate the ordinary
+cost in repeated I/O calls and durability work, rather than metadata/index loops.
+They do not distinguish native I/O, filesystem/device behavior, scheduling or GC.
+
+Instrumented transaction-start P99 was **48.30–53.33 ms** and maximum
+**69.59–77.00 ms** across the four processes. Diagnostic instrumentation changes
+execution and can change scheduling; its timing and allocation numbers are not
+an end-to-end performance comparison. The small interval not covered by child
+scopes is not a bound on total instrumentation overhead. Capturing the extreme
+baseline event with less intrusive recording remains necessary before assigning
+its cause or selecting another tail-latency fix.
+
+All eleven production DLLs, engine/ADO/crash-harness Storage copies, earlier
+source changes and unrelated files were verified unchanged. No production test
+rerun was needed for this isolated diagnostic phase; fresh validation consists
+of the five durable reopens and complete compaction-byte/offset checks.
+
+Evidence: `.tmp/wal-compaction-io-20261005` contains verified instrumented source,
+the frozen four-capture protocol and inputs, raw phase records, byte-accounting
+validation, analysis and closeout. No measured workload was retried or excluded.
+
+## October 5, 2026 Rejected Background Checkpoint Catch-Up Budget
+
+An isolated prototype doubled the copy budget before admitting a waiting
+large-commit writer. It failed the paired performance screen and was never
+installed in the repository's production sources or build outputs. The previous
+storage/query improvements and six retained compaction regression cases are
+unchanged. Only this record is retained from the experiment.
+
+Reanalysis of both prior current-runtime phase captures found **63 copy slices
+and 20 intervening transaction starts per checkpoint generation**, leaving
+**2,662–2,665 retained WAL frames (about 10.46 MiB)** to relocate. That supported
+testing a larger per-turn budget: copy twice the latest large commit's page
+count before yielding. Each individual copy slice, small-commit full draining,
+reader/writer barriers, flushes and WAL format stayed unchanged. The prototype
+changed only that budget expression and its comment in a separate Storage build.
+
+Both arms first passed 80-commit smoke runs with exact durable-reopen count/sum
+checks for 960,000 rows each. The frozen screen then used the same historical
+uninstrumented harness, all identical dependencies except Storage, background
+checkpoint threshold 4,096, 10,000 rows per commit, 16 warmup and 300 measured
+commits, in baseline/candidate/candidate/baseline order. All four processes
+passed exact durable-reopen checks for 3,160,000 rows each. Runs used the normal
+desktop, with no idle gates, retries, exclusions or tuning of the multiplier.
+
+| Pair | Baseline P95 | Candidate P95 | P95 change | Baseline P99 | Candidate P99 | Throughput change |
+|---|---:|---:|---:|---:|---:|---:|
+| 1 | 23.33 ms | 27.17 ms | +16.45% | 46.60 ms | 57.48 ms | -6.92% |
+| 2 | 20.71 ms | 28.64 ms | +38.30% | 181.25 ms | 51.85 ms | +10.78% |
+
+Both P95 comparisons exceeded the +5% guard, and the required at-least-10% P99
+improvement in both pairs failed. Allocation fell about 0.31% and background
+task starts fell from 189 to 117, but those narrower gains did not qualify the
+change. The planned 1,000-row and single-row guard workloads and production
+promotion were skipped under the predeclared stop rule.
+
+The last **unchanged baseline** process reproduced the large periodic tail:
+transaction-start P99 was **167.74 ms**, maximum **198.69 ms**, with its slowest
+starts at the same checkpoint-finalization cadence seen earlier. This establishes
+that a roughly 180 ms whole-operation tail can occur without either rejected
+WAL optimization. It does not establish filesystem, scheduler, device or other
+host activity as its cause. The new screen records whole Begin/Insert/Commit
+phases; it cannot attribute that particular spike to a lower-level I/O operation.
+The next diagnostic target is read/write/truncate/flush attribution within
+retained-WAL compaction during a baseline spike.
+
+All eleven production DLLs, the engine/ADO/crash-harness Storage copies, previous
+source changes and unrelated files were verified unchanged. No new production
+tests were added or rerun for this isolated rejection; the preceding **138-test
+Release qualification** still identifies these same production binaries. The
+six new benchmark processes supplied fresh durable-reopen correctness checks.
+
+Evidence: `.tmp/checkpoint-catchup-budget-20261005` contains the original
+repository hashes, isolated source/runtime, frozen protocol and inputs, all
+smoke and comparison outputs, phase analysis, rejected patch and closeout.
+
+## October 5, 2026 Writer-Wait Attribution and Retained-WAL Compaction Screen
+
+The recurring background-checkpoint stalls now have direct phase attribution:
+the next transaction waits while checkpoint finalization compacts the newer WAL
+suffix left by commits interleaved with the earlier copy. Larger move chunks
+were tested and rejected under the predeclared performance screen. Production
+sources and all eleven product DLLs were restored to their preceding state;
+six boundary/reopen regression cases and this investigation record are retained.
+The earlier storage safety and primary-key range changes remain intact.
+
+An isolated Storage build inserted scoped, thread-safe timing records around
+writer admission, checkpoint preparation/validation/copy, finalization,
+database/WAL flushes, compaction/truncation and task lifetime. Four serial fresh
+processes ran current/rejected-flush-once/rejected-flush-once/current with the
+same historical 10,000-row durable batch harness: 16 warmup and 300 measured
+commits each. All four passed exact durable-reopen count and sum checks for
+3,160,000 rows. Instrumentation is diagnostic evidence, not performance
+qualification or a replacement for the earlier rejected measurements.
+
+On current code, representative recurring transaction-start waits of
+**30–41 ms** overlapped retained-WAL compaction for **19–26 ms**. Writer-wait
+spans nearly covered those transaction-start intervals; acquiring the checkpoint
+barrier took at most about 0.1 ms in those examples. Database flushing contributed
+about 8–9 ms, and WAL flushing inside compaction about 5–6 ms. These are nested
+scopes and must not be added indiscriminately. First-copy admission also showed
+roughly 10–11 ms of committed-WAL validation. The earlier approximately 193 ms
+whole-operation outlier did not recur, so its specific cause remains unresolved.
+
+The candidate used a temporary pooled buffer capped at **128 frame-aligned
+frames** for retained-suffix moves, instead of reusing the 16-frame checkpoint
+buffer for all moves. Small suffixes retained the existing buffer. Database
+copy/validation slices, WAL format, durability barriers and defaults were unchanged.
+Six new cases cover 16, 17, 127, 128, 129 and 257 retained frames, overlapping
+source/destination ranges, multiple commits, replacement pages, partial final
+chunks, reopen recovery and appending after relocation. **131 focused Release
+WAL/checkpoint tests passed** before the uninstrumented screen.
+
+The paired screen used the original byte-identical timing harness and dependencies,
+changing only Storage, in baseline/candidate/candidate/baseline order on the normal
+desktop. Each process measured 300 durable commits of 10,000 rows and passed
+the full count/sum reopen check. No measured process was retried or excluded.
+
+| Pair | Baseline P99 | Candidate P99 | P99 change | Throughput change | P95 change | Allocation change |
+|---|---:|---:|---:|---:|---:|---:|
+| 1 | 38.37 ms | 35.99 ms | -6.18% | -1.98% | +4.65% | +0.91% |
+| 2 | 38.12 ms | 33.82 ms | -11.29% | +0.81% | +2.26% | +0.92% |
+
+Transaction-start P99 improved 11.53% and 14.21%, but the required whole-operation
+P99 improvement of at least 10% in **both** pairs failed, as did non-negative
+median paired throughput (about -0.59%; -0.63% including final drain). The planned
+1,000-row and single-row guard workloads were skipped under the stop rule.
+The buffer change was therefore restored, not promoted on the narrower phase gain.
+The next investigation should examine the amount of retained WAL that accumulates
+while copy slices and writers alternate, before changing the scheduling policy
+or relocation algorithm.
+
+The first new-test attempt used the wrong expectation for the live index
+generation: compaction advances it rather than resetting it to the retained
+commit count. All six failures are preserved; the assertion was corrected before
+measurement. Restoration also caught a stale incremental output after copying
+back an older-timestamp source file. That test attempt is explicitly invalid for
+restored-runtime qualification. A forced Storage rebuild, completed dependent
+build, and hash checks established identical pre-experiment binaries, including
+the engine-test, ADO-test and crash-harness Storage copies. The final **138
+Release WAL/checkpoint/fault/crash tests passed**, including the six new cases.
+
+Evidence: `.tmp/checkpoint-writer-wait-20261005-v2` contains the isolated phase
+records and verified instrumentation. Its initial sibling preserves a Windows
+path-normalization setup failure before any build or measurement.
+`.tmp/wal-compaction-chunks-20261005` contains the frozen performance protocol,
+runtime snapshots, all raw samples, failed and corrected test records, rejected
+patch, final runtime verification and restoration closeout.
+
+## October 5, 2026 Checkpoint Attribution and Rejected Flush-Once Follow-Up
+
+No additional production optimization was retained from this investigation.
+The earlier storage safety repairs and primary-key range mutation targeting
+remain intact. A checkpoint flush-once candidate passed correctness tests but
+failed the background large-batch performance screen again, so its WAL and test
+changes were restored exactly to the pre-experiment sources. All results and
+the rejected patch are preserved; no measured workload was retried or excluded.
+
+An isolated copy of the current Storage assembly added eight scoped timers and
+ran four mixed-workload profiles: 8 MB and 84 MB, default and mapped reads,
+8 warmup plus 64 measured cycles each. Every one of the 256 measured final
+checkpoints issued **two database durability flushes and one WAL durability
+flush**. The first database-flush median was **2.38–2.44 ms**, the second
+**0.47–1.90 ms**, and WAL-flush median **2.09–2.10 ms**. Timer scopes are nested;
+WAL reset and pager refresh include their child operations. These instrumented
+runs had total checkpoint medians **7.70–9.52 ms** and are attribution evidence,
+not a direct comparison with the preceding uninstrumented timings. All exact
+query/snapshot/checkpoint and full durable-reopen checks passed.
+
+A distinct mapped read-only control compared the pre-range-targeting and current
+runtimes using one byte-identical harness. Each size ran before/current/current/
+before, with 32 warmup and 256 measured cycles of 16 prepared point reads, two
+256-row ranges and a held reader. All **36,864 timed queries** passed exact
+results/EOF/cleanup checks, and database files were unchanged byte-for-byte.
+Median changes were:
+
+| Fixture | Pair | Point read | Range read |
+|---|---:|---:|---:|
+| 8 MB | 1 | +3.93% | +1.05% |
+| 8 MB | 2 | +63.00% | +76.29% |
+| 84 MB | 1 | -7.36% | -14.67% |
+| 84 MB | 2 | 0.00% | +0.98% |
+
+No size/metric exceeded the diagnostic +5% median or +10% P99 threshold in both
+pairs, but the large small-file slowdown is retained. The result is inconclusive
+about the earlier mapped mixed-workload misses: it does not establish a
+consistent direct query-path regression, prove host noise, or clear those gates.
+Mapping remains opt-in.
+
+The duplicate-flush experiment reused the previously rejected approach: record
+successful database durability on each immutable checkpoint image, skip another
+database flush during separate finalization, retry failed/cancelled flushes, and
+require a new flush for a later checkpoint image. No WAL durability barrier or
+default was changed. The current candidate passed **3,456 engine + 325 ADO =
+3,781 Release tests**, including four successful/retry/retained-frame cases and
+the process-crash suite with the crash harness rebuilt against that candidate.
+
+Before any mixed-workload qualification, the candidate faced the previously
+failing background workload on current code: the identical historical harness
+source, `UseLowLatencyDurableWritePreset(4096)`, 10,000 rows per commit, 16 warmup
+and 300 measured commits, four serial fresh processes in baseline/candidate/
+candidate/baseline order. Timing mode avoids per-commit diagnostic reads. All
+four processes passed durable-reopen row-count/sum verification for **3,160,000
+rows each**, including warmup. Performance results were:
+
+| Pair | Baseline rows/sec | Candidate rows/sec | Throughput change | Baseline P99 | Candidate P99 | P95 change |
+|---|---:|---:|---:|---:|---:|---:|
+| 1 | 810,237 | 564,078 | -30.38% | 38.54 ms | 192.71 ms | -0.49% |
+| 2 | 753,809 | 749,158 | -0.62% | 41.39 ms | 41.86 ms | +5.42% |
+
+The required P95 improvement in both pairs, non-negative median paired throughput
+change, and non-positive median paired P99 change failed. The planned 16 mixed
+comparison processes were therefore skipped under the predeclared stop rule.
+Neither this result nor the original October 3 rejection was replaced.
+
+Raw phase timings locate the large first-pair tail in **transaction start**:
+its P99 rose **27.04 to 178.82 ms** and maximum **37.85 to 196.66 ms**, while
+median row-insertion time remained about **7.0 ms**. This narrows the next
+investigation to the background checkpoint's effect on writer admission;
+it does not yet isolate coordinator scheduling, filesystem I/O, or host activity
+as the cause. Inspect `Pager.WaitForBackgroundCheckpointForWriterAsync` alongside
+background copy slices and finalization before adopting a flush reduction.
+
+After rejection, both experimental files were restored by verified hashes and
+the engine, ADO and crash-harness outputs rebuilt. **157 storage/crash plus six
+ADO focused tests passed** on the restored implementation. The prior accepted
+production sources and unrelated work remain intact; only this history entry
+is retained in the repository from this phase.
+
+Evidence: `.tmp/checkpoint-read-attribution-20261005-v2` contains 2,408 frozen
+inputs, phase traces and read-only controls. The initial sibling directory
+preserves an assembly-version setup failure that occurred before entering the
+workload and produced no timing samples; corrected probes passed all four smoke
+cases before measurement. `.tmp/checkpoint-flush-once-20261005` contains 2,244
+candidate inputs, source/runtime snapshots, complete test results, background
+samples, phase analysis, rejection/restoration receipts and the rejected patch.
+
+## October 5, 2026 Primary-Key Range Mutation Targeting
+
+UPDATE and DELETE now consider the existing physical integer primary-key range
+operator after their existing equality and secondary-index choices. The collector
+still materializes stable row identities and full rows before applying changes;
+residual predicates, index maintenance, transaction handling and logical read
+tracking remain in the existing paths. The operator exposes its current physical
+row id, and plain EXPLAIN uses the same fallback as execution. Composite and
+backed primary keys retain their existing paths. Mapping and checkpoint defaults
+are unchanged, and both comparison arms include the prior storage safety repairs.
+
+This removes the full-table scan previously observed for a 16-row UPDATE.
+In the **84 MB / 100,000-row** default-read case, full transaction medians fell
+from **122.50–127.70 ms to 2.62–2.71 ms**, a **97.79–97.95%** paired reduction.
+Complete cycles fell from **135.30–141.08 ms to 11.97–12.42 ms**; process-wide
+allocation fell from **134.38 MB to 2.385 MB/cycle** (decimal MB). Point-read P99
+fell from **142.49–150.67 ms to 2.36–2.38 ms**. These are the full mixed workload
+measurements, including durable commits, not comparison-count or scan-only claims.
+
+Paired candidate/baseline median changes (negative is faster/lower):
+
+| Fixture / reads | Pair | Transaction | Final checkpoint | Complete cycle | Allocation/cycle |
+|---|---:|---:|---:|---:|---:|
+| 8 MB / default | 1 | -78.58% | -2.34% | -47.21% | -85.75% |
+| 8 MB / default | 2 | -78.79% | -3.69% | -48.24% | -85.75% |
+| 8 MB / mapped | 1 | -84.92% | -0.84% | -56.16% | -93.85% |
+| 8 MB / mapped | 2 | -84.39% | -11.40% | -56.30% | -93.85% |
+| 84 MB / default | 1 | -97.95% | -6.31% | -91.51% | -98.23% |
+| 84 MB / default | 2 | -97.79% | -3.64% | -90.82% | -98.23% |
+| 84 MB / mapped | 1 | -98.39% | -60.54% | -93.77% | -99.36% |
+| 84 MB / mapped | 2 | -98.48% | -60.30% | -94.21% | -99.36% |
+
+All default-read comparisons passed the predeclared guards: at least 10% lower
+transaction medians, no other guarded median or allocation regression above 5%,
+and no repeated P99 regression above 10%. Mapped comparisons passed the write,
+checkpoint, cycle and allocation guards but missed three read-median checks:
+small pair 2 range **+5.48%** (400.65 to 422.60 microseconds), large pair 1 point
+**+8.55%** (66.70 to 72.40 microseconds), and large pair 1 range **+8.69%**
+(421.65 to 458.30 microseconds). No case had a repeated P99 regression. These
+misses are retained without reruns or causal attribution; the complete mapped
+performance gate is not passed. Keep mapping opt-in.
+
+The byte-identical harness from the preceding comparison ran 16 fresh serial
+processes: baseline, candidate, candidate, baseline for each of two file sizes
+and two read modes. Baseline is the corrected pre-change runtime; candidate
+differs in three execution-source files and four rebuilt DLLs (Execution, Engine,
+Client and Data). External dependencies, all other runtime DLLs, harness and
+fixtures match. All **2,197 frozen inputs** verified. Each process ran 32 warmup
+and 256 measured cycles, using the prior pooled ADO workload: 16 prepared point
+reads and two 256-row ranges overlap a transaction that updates 16 rows and
+appends four. A held reader retains its snapshot, the first checkpoint must
+defer copying, and a final checkpoint after disposal drains the WAL.
+
+All **4,096 measured transactions, 73,728 ordinary queries, 4,096 held readers,
+81,920 row mutations and 8,192 checkpoint requests** passed exact result,
+snapshot, cleanup and full durable-reopen checks. Every process showed actual
+query/transaction interval overlap (446–518 queries per process). All samples
+were retained, with no measured retry, host-idle gate, or competing build/test.
+This is normal-desktop warm evidence with unbounded caches, one reader worker
+plus a held reader, and manually scheduled foreground checkpoints at an explicit
+`int.MaxValue` automatic threshold. It does not qualify cold I/O, many-client
+stress, product-default checkpoint scheduling or an entire release. Timed SQL
+measures UPDATE; DELETE shares the collector and has correctness coverage, but
+no separate DELETE timing claim is made.
+
+A separate eight-process, two-cycle diagnostic confirmed **eight baseline
+scanned collections versus eight candidate indexed collections**. On the large
+mapped case, read-only copied pages before checkpoint fell from **19,995 to 1**;
+default writer cache size before checkpoint fell from **20,014 to 20 pages**.
+The scan removal therefore also eliminates most copied-page invalidation work
+in this workload, reducing the immediate value of a cache-retention redesign.
+Remaining final-checkpoint medians were **5.20–5.33 ms default** and
+**5.88–6.15 ms mapped** on the large file, compared with **2.03–2.09 ms** and
+**2.23–2.29 ms** commit medians. Next investigate that remaining checkpoint cost
+and the mapped short-read guard misses before changing cache lifetime or defaults.
+
+Final Release validation passed **3,452 engine + 325 ADO = 3,777 tests**, with
+no failures or skips. The 43 new cases cover bounds, residual/OR/NULL semantics,
+neighbor preservation, primary-key changes and secondary indexes, rollback,
+extreme keys, backed/composite keys, empty-range serializable conflicts,
+EXPLAIN/ANALYZE row identities, non-leading keys, ALTER ADD row shapes, and
+prepared mutation rebinding. The pre-change baseline failed 22 bounded-path
+assertions while passing their preceding result checks; this is optimization
+coverage, not a claim of 22 existing data-correctness defects.
+
+Evidence: `.tmp/pk-range-mutation-20261005` retains baseline sources/runtime,
+protocol, frozen inputs, all raw intervals and paired analysis, diagnostic
+results, test/build logs and preservation receipts. The preceding 301 mixed-run
+artifacts and unrelated work are preserved.
+
+## October 5, 2026 Mixed Read/Write and Checkpoint Comparison
+
+The corrected mapped option is **not qualified as a general default** by this
+mixed workload. Its prepared range reads remained faster, but full transactions,
+checkpoint completion, allocation, and point-read tails regressed. Keep the
+correctness repairs and the opt-in setting. The next optimization target is
+physical primary-key range targeting for UPDATE/DELETE, followed by retaining
+stable copied pages across checkpoints where safe.
+
+The fixed sequence compared archived `26a55593` default reads, corrected default
+reads, and corrected mapped reads. Each of two fixtures ran baseline, corrected,
+mapped, mapped, corrected, baseline in six serial fresh processes. The fixtures
+contained 10,000 and 100,000 real mixed-payload rows and occupied **8,441,856 and
+84,164,608 bytes**. Seven rebuilt runtime DLLs differed between baseline and
+corrected arms, reflecting the four recorded storage-source repairs and rebuilt
+dependents; the common harness and external dependencies were identical. All
+1,094 frozen inputs passed verification. No product source changed in this phase.
+
+Each process ran 32 warmup and 256 measured cycles. One primed 256-row reader
+held its snapshot while a second pooled ADO worker ran 16 prepared point lookups
+and two 256-row ranges concurrently with a durable transaction updating 16 rows
+and appending four. A checkpoint request while the held reader was active had
+to defer copying; a second request after disposal drained the WAL. The run used
+unbounded caches, normal read-ahead, foreground mode, and an explicit
+`int.MaxValue` auto-checkpoint threshold to isolate the scheduled manual
+checkpoints. This is not a product-default auto-checkpoint or cold-disk test.
+
+All **12 processes, 3,072 measured transactions, 55,296 ordinary queries, 3,072
+held readers, 61,440 row mutations, and 6,144 checkpoint requests** completed
+with exact row/version/order/EOF checks, correct checkpoint states, reader
+cleanup, and full durable-reopen verification. Every process showed overlapping
+query/transaction intervals. All samples were retained; there were no measured
+reruns. Preparation smoke runs and a separate post-timing diagnostic are excluded
+from performance comparisons. Process-wide allocation is reported per complete
+cycle, not attributed to individual concurrent operations.
+
+Mapped versus corrected default, paired median changes:
+
+| Fixture | Range read | Full transaction | Final checkpoint | Complete cycle | Allocation/cycle |
+|---|---:|---:|---:|---:|---:|
+| 8 MB, pair 1 | -59.91% | +39.16% | +23.29% | +17.87% | +28.65% |
+| 8 MB, pair 2 | -64.64% | +29.23% | +21.73% | +10.61% | +28.66% |
+| 84 MB, pair 1 | -66.70% | +48.30% | +184.98% | +45.34% | +58.66% |
+| 84 MB, pair 2 | -66.03% | +61.20% | +179.12% | +60.60% | +58.66% |
+
+On the larger file, corrected default transaction medians were **114.06–126.44
+ms**, versus **183.86–187.52 ms** mapped. Commit alone remained **2.38–2.75 ms**
+default and about **2.38 ms** mapped. Checkpoint medians increased from about
+**5.52 ms to 15.40–15.72 ms**. Mapped range reads took **0.419–0.429 ms** instead
+of **1.232–1.287 ms**. Allocation rose from **134.38 to 213.22 MB/cycle** (decimal
+MB). Point median latency improved, but its P99 rose **40.82% and 91.35%** on
+the large fixture; a small median therefore hides the admission tail. The
+mapped arm failed the predeclared non-regression guards in both fixtures.
+
+The correctness repairs with default reads passed all transaction, commit,
+checkpoint, cycle and allocation median guards versus the old default, with no
+repeated P99 failure. However, large-file pair 1 point median was **+6.68%** and
+pair 2 range median **+6.25%**, exceeding the strict per-pair 5% limit. Consequently
+the complete repair performance gate is also not fully passed. These local
+results are retained without attributing every small read difference to the
+repair or claiming release-wide performance neutrality.
+
+A separate four-case, two-cycle diagnostic confirmed two costs on corrected
+code. Every 16-row range UPDATE used the scanned mutation-target path, with
+zero indexed collections. `CollectMutationTargetRowsAsync` considers lookup and
+secondary-index paths but omits the physical primary-key range path already
+used by SELECT, so this predicate falls through to the full table scan. The
+pool's read and write dispatch share a gate, allowing that work to delay new
+read admission. This is source/counter attribution, not isolated phase timing.
+
+The diagnostic also observed **1,995 / 19,995 read-only copied pages** retained
+before final checkpoint in the small/large mapped cases, then **zero** afterward.
+On the large file the writer cache fell from 20,013 to 18 pages. Default reads
+retained all 20,014 cached pages in the corresponding cycle. The safe managed
+copies are currently treated like transient mapped views during checkpoint
+invalidation, so the next full UPDATE scan repopulates them. This provides a
+concrete cache-retention follow-up; it does not justify restoring unsafe borrowed
+views or changing the default now.
+
+Evidence: `.tmp/mixed-read-write-20261005` contains the frozen protocol, runtimes,
+fixtures, all raw intervals, paired analysis, diagnostics, and preservation
+receipts. The 84 MB fixture is larger-file evidence, not a greater-than-2-GiB
+database qualification. The previous 3,734 Release test result remains the
+correctness validation for the unchanged production sources.
+
+## October 5, 2026 Mapped-Read Safety Qualification (Correctness Repairs)
+
+The follow-up to the read-only option comparison found and repaired two
+correctness defects before further performance qualification:
+
+- With a one- or two-page cache, B-tree structural edits could retain a clean
+  parent or sibling buffer across eviction, then mark a reloaded old buffer
+  dirty. This lost routing/link updates during insertion, replacement, and
+  deletion. A pooled growing-write case returned every row but in the wrong
+  order, and a point lookup missed an existing row even after reopening.
+  B-tree mutations now register the exact edited buffer; clean traversal pages
+  are not marked dirty merely because they were visited.
+- A shared writer-pager mapping could be disposed by checkpoint growth while
+  a snapshot point lookup or explicit transaction clone still used its page.
+  Deterministic gated tests reproduced `ObjectDisposedException`. Shared mapped
+  reads now return stable read-only managed copies, with copying synchronized
+  against remapping/disposal. Dedicated snapshot pagers retain zero-copy mapped
+  views, and the mapping option remains opt-in.
+
+The diagnostic preserved a fixed 12-case baseline matrix: mapping off/on,
+cache sizes 2/16/default, and read-ahead off/on. All four cache-2 cases had
+incorrect ordering and a missing point lookup; the eight larger-cache cases
+passed. The problem already existed before commit and survived checkpoint and
+reopen, excluding read-ahead and mapping as its cause. No rows were absent from
+the full scan, but B-tree routing and ordering were incorrect.
+
+Against archived unchanged baseline production assemblies, **14 of 16 targeted
+regressions failed**: twelve bounded-cache structural cases and both mapped
+checkpoint-overlap cases. The two ordinary-read overlap controls passed.
+The final regression set adds **31 cases** covering those failures, pooled
+commit/rollback and prepared-command reuse, held snapshot scans, independent
+reader disposal, retained text/blob values, remapping, partial-page reads,
+supported shrink after releasing mappings, and sparse growth beyond 2 GiB.
+The sparse test writes only 8 KiB; it verifies provider fallback correctness,
+not large-database performance.
+
+The fixes passed clean Release builds, **180 focused tests**, and the full
+Release engine/ADO suites: **3,411 + 323 = 3,734 passed**, with no failures or
+skips. Independent review found no blocker in either correction. One initial
+delete-test assertion incorrectly required a three-level tree to compact to a
+single leaf despite the existing deliberate retention of underfull interior
+levels; the archived failing test was corrected to a two-level fixture that
+exercises supported root collapse, retaining all row/payload/lookup checks.
+All initial failures and baseline diagnostics are retained under
+`.tmp/mapped-read-safety-20261005`.
+
+This is correctness evidence, not a new performance claim. Shared mapped cache
+misses now copy a 4 KiB page and may copy again on later mutable access. The
+earlier read-only numbers must not be generalized to shared point lookups,
+direct Database reads, or write workloads after this repair. Next measure
+mixed read/write latency, checkpoint tails, and larger real databases using
+the corrected implementation before considering broader default behavior.
+
+## October 5, 2026 Existing Memory-Mapped Read Option (Local Read Improvement)
+
+The existing `UseMemoryMappedReads()` option passed the fixed four-workload
+comparison on baseline `26a55593`. The wide mixed-column query fell from about
+**11 ms to 2.33 ms**, with about **49.2% less allocation**. Small queries also
+improved with per-reader mapping creation and disposal included. Production
+defaults and code were not changed.
+
+Both arms supplied explicit `DatabaseOptions` to the pooled ADO connection;
+only the `UseMemoryMappedReads` Boolean differed. They used one common harness
+and identical copies of all 18 frozen runtime DLLs. First-warmup inspection
+verified featureless execution, the expected row/batch projection path, native
+providers, the inspected reader's dedicated live mapping, and mapping release
+after awaited reader disposal. Runtime counters, tracing, interceptors, and
+measured-query reflection were absent.
+
+The fixed ABBA sequence used **16 serial fresh processes, 40,000 measured queries,
+and 13,520 warmups**, with all samples retained. Every query checked both integer
+values, exact row count, EOF, and reader cleanup. All 62 frozen inputs and
+fixture copies passed verification. No measured workload was retried or excluded.
+Release builds were clean and **49 existing focused tests passed**: page buffers,
+storage configuration, ADO tuning, mapped views/owned copies, and fallback reads.
+
+| Workload | Pair 1 median, default to mapped | Pair 2 median, default to mapped | Allocation reduction, pairs 1 / 2 |
+|---|---:|---:|---:|
+| Numeric, 4 rows | 39.2 to 30.3 us (-22.70%) | 43.7 to 30.8 us (-29.52%) | 62.13% / 62.13% |
+| Numeric, 4,096 rows | 741.7 to 564.5 us (-23.89%) | 739.1 to 570.2 us (-22.85%) | 89.81% / 89.80% |
+| Mixed, 4 rows | 66.2 to 50.6 us (-23.56%) | 65.7 to 55.5 us (-15.53%) | 64.60% / 64.59% |
+| Mixed, 4,096 rows | 11,003.8 to 2,342.0 us (-78.72%) | 10,863.3 to 2,328.5 us (-78.57%) | 49.23% / 49.24% |
+
+Both wide mixed-query pairs exceeded the predeclared requirements of 10% lower
+median latency and 20% lower allocation. Every per-pair 5% median/allocation
+regression guard and repeated 10% P99 guard passed; P99 decreased in all eight
+pairs. These are local configuration-comparison results, not release-wide
+qualification or a default-setting change. Independent review recomputed all
+40,000 raw samples and eight paired comparisons, confirming every result and
+the absence of regression flags.
+
+The option used in the mapped arm is already available:
+
+```csharp
+var options = new DatabaseOptions()
+    .ConfigureStorageEngine(builder => builder.UseMemoryMappedReads());
+
+await using var connection = new CSharpDbConnection(
+    "Data Source=app.db;Pooling=true", options);
+await connection.OpenAsync();
+```
+
+This comparison used immutable checkpointed 10,000-row files of 520,192 and
+8,441,856 bytes on one Windows/.NET 10.0.12 host. It includes mapped reader setup,
+but does not exercise concurrent writes or held readers across checkpoints.
+The provider also falls back to copy-based reads when file length exceeds its
+`int.MaxValue` mapping limit. The next qualification step is mixed read/write,
+reader lifetime/checkpoint behavior, and larger files before considering broader
+default behavior. The smaller exclusive-bound prefetch opportunity remains
+separate. Evidence is in `.tmp/mapped-read-comparison-20261005`.
+
+## October 5, 2026 Leaf-Page Read Attribution (Baseline Diagnostic)
+
+With the sparse-decoder candidate restored, a bounded diagnostic investigated
+the remaining page-read and buffer costs on production baseline `26a55593`.
+It used the unchanged baseline runtime and existing checkpointed fixtures.
+Two fresh processes each ran **65 warmups and 65 measured prepared pooled ADO
+queries**, returning and validating 4,096 rows plus EOF per query. All 130
+measured queries and reader cleanup checks passed; no workload was retried.
+An independent audit verified all 53 pinned inputs and every raw sample. Each
+read count matched the fixture's leaf intersections, interior seek depth, and
+the source's boundary-prefetch prediction.
+
+An independent raw-file inspection verified all 20,000 fixture rows and leaf
+chains. Numeric records occupy 19 bytes and 136 rows per full leaf; mixed
+records occupy 793 bytes and five rows per leaf. Both queries select the same
+two integer outputs. The wider underlying records therefore require many more
+leaf pages even when the output is narrow.
+
+| Per 4,096-row query, averaged over 65 parameter values | Numeric fixture | Mixed fixture |
+|---|---:|---:|
+| Leaves containing returned rows | 31.09 | 820.00 |
+| Completed file-read API calls | 32.12 | 822.20 |
+| Sequential subset of file-read calls | 30.12 | 819.20 |
+| Page-buffer payload bytes, lower bound | 131,576 | 3,367,731 |
+| Total allocated bytes | 171,679 | 8,819,733 |
+
+The built-in file counters were enabled without a storage wrapper or page
+interceptor, retaining native sequential read-ahead and featureless execution.
+Counter snapshots, reflection, and reporting were outside measurement; query
+execution included awaited reader disposal. The counters add a per-read lock
+and count completed API calls, including OS-cached reads. They do **not** count
+physical disk operations or measure I/O wait. Each successful page read on this
+provider allocates a 4,096-byte array; the lower bound excludes array headers,
+failed/canceled attempts, decoding, and other allocations. These diagnostic
+timings are not performance qualification or a speedup comparison.
+
+Warmup inspection confirmed distinct snapshot pager/cache objects for successive
+readers, each starting empty. Before EOF, the numeric reader retained two cache
+pages and the mixed reader three; speculative pages were consumed directly
+without cache insertion. Providers and the actual file device were shared.
+This matches the intentional pager-local snapshot cache design. Warmups do not
+retain these reader pages for later queries. Logical hit/miss counters were
+unavailable on this default path and were not inferred from residency.
+
+The next bounded comparison is the existing **`UseMemoryMappedReads()` option**,
+including both 4-row and 4,096-row controls. It can supply page views without
+per-page byte arrays, but each snapshot creates and disposes its own mapping,
+so small-query overhead must be measured. Sharing a page-ID cache across reader
+snapshots would require separate versioning and lifetime design.
+
+A smaller source opportunity remains: exclusive upper bounds currently retain
+a conservative prefetch threshold. At a leaf ending at `upper - 1`, one successor
+can be prefetched unnecessarily. This boundary appears in 13 of 65 mixed ranges
+and two of 65 numeric ranges; it cannot explain the wide-query page count.
+Production code is unchanged. Evidence is in `.tmp/leaf-read-attribution-20261005`.
+
+## October 5, 2026 Sparse Projection Decoding (Candidate Rejected)
+
+After `26a55593` committed the buffered-row contracts and rejected experiment,
+a decoder diagnostic isolated the cost of materializing skipped values. On
+pre-encoded records containing an integer, 256-character text, 512-byte blob,
+and another integer, selected decoding reduced allocation from **1,072 to zero
+bytes/record**. The eight-process diagnostic reused output arrays and excluded
+storage, planning, and ADO delivery; it did not establish a query speedup.
+
+The production candidate used the configured serializer's existing compact
+selected decoder only for ordered, unique, sparse primary-key projections.
+It initialized output to NULL for older short records and retained existing
+dense, reordered, duplicate, and primary-key-only paths. Six new contract cases
+cover row/batch boundaries, missing and NULL fields, retained text/blob outputs,
+reopening, and a custom-format serializer. They passed against both original
+and candidate implementations. Candidate Release builds were clean; all
+**3,384 engine and 319 ADO tests**, including **64 focused cases**, passed.
+
+A new common harness retained the original nine workloads and added numeric
+and mixed sparse projections at 4 and 4,096 rows. The fixed comparison ran
+**52 serial processes, 140,000 measured queries, and 43,160 warmups** under normal
+desktop conditions. Only the matched Execution assembly differed between
+arms. All **972 frozen inputs**, compiler/PDB provenance, fixture copies,
+typed values, checksums, and reader-cleanup checks passed. An independent audit
+recomputed all raw samples and 26 paired comparisons. No measured run was
+retried, excluded, or replaced.
+
+| 4,096-row mixed sparse comparison | Pair 1 | Pair 2 |
+|---|---:|---:|
+| Median latency, control to candidate | 11,169.0 to 10,727.7 us | 11,080.8 to 10,744.0 us |
+| Median latency change | -3.95% | -3.04% |
+| Allocated bytes/query, control to candidate | 8,822,482 to 4,434,982 | 8,821,833 to 4,434,621 |
+| Allocation change | -49.73% | -49.73% |
+
+The candidate **failed qualification**: both wide mixed-query pairs missed
+the predeclared requirement of at least 5% lower median latency, although both
+met the 20% allocation target. The four-row numeric sparse second pair also
+failed the unchanged 5% median regression guard: **41.8 to 44.7 us (+6.94%)**.
+All other median/allocation guards and all repeated-P99 guards passed. These
+observations do not identify scheduling or a particular instruction as the
+cause of the regression.
+
+`PrimaryKeyRangeScanOperator.cs` was restored to committed `26a55593`; the tests
+and complete failed experiment are retained. Final Release verification after
+restoration also passed all **3,384 engine and 319 ADO tests**, including the
+64 focused cases, with clean builds. This delivers **no production performance
+improvement**. The next investigation is leaf-page reads and
+buffer allocations for wide records, while preserving read-ahead behavior.
+The cursor resolves payloads before projection, and inline payloads are page
+memory views; row delivery also reuses its output array. Different fixture
+densities make the mixed/numeric timing gap a hypothesis to investigate,
+not a causal decomposition. Evidence, including the rejected source and
+versioned input resolution, is in `.tmp/projection-decoding-20261005`.
+
 ## October 5, 2026 Buffered Row Delivery (Candidate Rejected)
 
 A fresh phase diagnostic on committed `f94ce04f` confirmed that pooled ADO

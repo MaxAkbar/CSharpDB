@@ -72,6 +72,7 @@ internal sealed class PrimaryKeyRangeScanOperator :
     public ColumnDefinition[] OutputSchema { get; }
     public bool ReusesCurrentRowBuffer => _reuseCurrentRowBuffer;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
+    public long CurrentRowId { get; private set; }
     public bool ReusesCurrentBatch => _reuseCurrentBatch;
     public RowBatch CurrentBatch => _currentBatch ??= new RowBatch(OutputSchema.Length, 0);
 
@@ -107,6 +108,7 @@ internal sealed class PrimaryKeyRangeScanOperator :
             ? _rowBuffer ??= new DbValue[OutputSchema.Length]
             : new DbValue[OutputSchema.Length];
         ProjectCurrent(row);
+        CurrentRowId = _cursor!.CurrentKey;
         Current = row;
         return true;
     }

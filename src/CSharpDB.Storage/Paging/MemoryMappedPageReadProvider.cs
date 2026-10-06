@@ -13,21 +13,34 @@ internal sealed class MemoryMappedPageReadProvider : IPageReadProvider, IDisposa
 {
     private readonly FileStorageDevice _device;
     private readonly StorageDevicePageReadProvider _fallback;
+    private readonly bool _copyOnRead;
+    private readonly object _mappingGate = new();
     private MemoryMappedFile? _mappedFile;
     private MemoryMappedViewMemoryManager? _mappedMemory;
     private long _mappedLength;
 
-    public MemoryMappedPageReadProvider(FileStorageDevice device)
+    public MemoryMappedPageReadProvider(FileStorageDevice device, bool copyOnRead = false)
     {
         ArgumentNullException.ThrowIfNull(device);
 
         _device = device;
         _fallback = new StorageDevicePageReadProvider(device);
+        _copyOnRead = copyOnRead;
         RefreshMapping();
     }
 
     public ValueTask<PageReadBuffer> ReadPageAsync(uint pageId, CancellationToken ct = default)
     {
+        if (_copyOnRead)
+        {
+            // Shared-pager callers can retain a page while checkpointing remaps
+            // this provider. A read-only copy survives that remap and makes later
+            // mutable cache access copy again instead of changing a reader's data.
+            return TryCopyMappedPage(pageId, out var copy)
+                ? ValueTask.FromResult(PageReadBuffer.FromReadOnlyMemory(copy))
+                : _fallback.ReadPageAsync(pageId, ct);
+        }
+
         long offset = (long)pageId * PageConstants.PageSize;
         if (_mappedMemory is not null && offset >= 0 && offset + PageConstants.PageSize <= _mappedLength)
         {
@@ -40,21 +53,36 @@ internal sealed class MemoryMappedPageReadProvider : IPageReadProvider, IDisposa
         return _fallback.ReadPageAsync(pageId, ct);
     }
 
-    public async ValueTask<byte[]> ReadOwnedPageAsync(uint pageId, CancellationToken ct = default)
-    {
-        long offset = (long)pageId * PageConstants.PageSize;
-        if (_mappedMemory is not null && offset >= 0 && offset + PageConstants.PageSize <= _mappedLength)
-        {
-            byte[] buffer = GC.AllocateUninitializedArray<byte>(PageConstants.PageSize);
-            _mappedMemory.Memory.Span.Slice((int)offset, PageConstants.PageSize).CopyTo(buffer);
-            _device.RecordMemoryMappedPageExposure(PageConstants.PageSize);
-            return buffer;
-        }
+    public ValueTask<byte[]> ReadOwnedPageAsync(uint pageId, CancellationToken ct = default)
+        => TryCopyMappedPage(pageId, out var copy)
+            ? ValueTask.FromResult(copy)
+            : _fallback.ReadOwnedPageAsync(pageId, ct);
 
-        return await _fallback.ReadOwnedPageAsync(pageId, ct);
+    private bool TryCopyMappedPage(uint pageId, out byte[] copy)
+    {
+        lock (_mappingGate)
+        {
+            long offset = (long)pageId * PageConstants.PageSize;
+            if (_mappedMemory is not null && offset >= 0 && offset + PageConstants.PageSize <= _mappedLength)
+            {
+                copy = GC.AllocateUninitializedArray<byte>(PageConstants.PageSize);
+                _mappedMemory.Memory.Span.Slice((int)offset, PageConstants.PageSize).CopyTo(copy);
+                _device.RecordMemoryMappedPageExposure(PageConstants.PageSize);
+                return true;
+            }
+
+            copy = null!;
+            return false;
+        }
     }
 
     internal void RefreshMapping()
+    {
+        lock (_mappingGate)
+            RefreshMappingCore();
+    }
+
+    private void RefreshMappingCore()
     {
         long mappedLength = _device.Length;
         bool shouldMap = mappedLength > 0 && mappedLength <= int.MaxValue;
@@ -81,7 +109,8 @@ internal sealed class MemoryMappedPageReadProvider : IPageReadProvider, IDisposa
 
     public void Dispose()
     {
-        ResetMapping();
+        lock (_mappingGate)
+            ResetMapping();
     }
 
     private void ResetMapping()

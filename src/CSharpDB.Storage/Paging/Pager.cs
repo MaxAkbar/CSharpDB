@@ -744,7 +744,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             _speculativePageReads is MemoryMappedPageReadProvider;
 
         var pageReads = needsDedicatedProviders
-            ? CreatePageReadProvider(_device, _options)
+            ? CreatePageReadProvider(_device, _options, copyMappedPages: false)
             : _pageReads;
 
         var speculativePageReads = needsDedicatedProviders
@@ -994,6 +994,26 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             inTransaction: true,
             GetPageAsync,
             ct);
+    }
+
+    // Structural edits can retain a clean page across reads or allocations that
+    // evict it. Register the actual edited buffer, rather than reloading its id.
+    internal ValueTask MarkDirtyAsync(uint pageId, byte[] page, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(page);
+        if (page.Length != PageConstants.PageSize)
+            throw new ArgumentException("A dirty page must contain exactly one page of data.", nameof(page));
+
+        if (GetCurrentTransaction() is { } tx)
+        {
+            if (!tx.ModifiedPages.TryGetValue(pageId, out var owned) || !ReferenceEquals(owned, page))
+                throw new InvalidOperationException("The dirty buffer must belong to the current write transaction.");
+            tx.DirtyPages.Add(pageId);
+            return ValueTask.CompletedTask;
+        }
+
+        _buffers.MarkDirty(pageId, page);
+        return ValueTask.CompletedTask;
     }
 
     /// <summary>
@@ -5083,10 +5103,11 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         }
     }
 
-    private static IPageReadProvider CreatePageReadProvider(IStorageDevice device, PagerOptions? options)
+    private static IPageReadProvider CreatePageReadProvider(
+        IStorageDevice device, PagerOptions? options, bool copyMappedPages = true)
     {
         if (options?.UseMemoryMappedReads == true && device is FileStorageDevice fileDevice)
-            return new MemoryMappedPageReadProvider(fileDevice);
+            return new MemoryMappedPageReadProvider(fileDevice, copyOnRead: copyMappedPages);
 
         return new StorageDevicePageReadProvider(device);
     }

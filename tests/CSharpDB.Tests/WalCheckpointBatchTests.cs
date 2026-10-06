@@ -6,6 +6,85 @@ namespace CSharpDB.Tests;
 
 public class WalCheckpointBatchTests
 {
+    [Theory]
+    [InlineData(16)]
+    [InlineData(17)]
+    [InlineData(127)]
+    [InlineData(128)]
+    [InlineData(129)]
+    [InlineData(257)]
+    public async Task Checkpoint_RetainedSuffixAcrossMoveChunks_PreservesCommitsAfterReopen(int retainedFrameCount)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_checkpoint_move_{Guid.NewGuid():N}.db");
+        try
+        {
+            await using var device = new MemoryStorageDevice();
+            uint pageCount = (uint)retainedFrameCount - 1;
+            var original = new Dictionary<uint, byte[]> { [0] = CreatePage(0, 1), [1] = CreatePage(1, 1) };
+            var expected = Enumerable.Range(0, (int)pageCount)
+                .ToDictionary(i => (uint)i, i => CreatePage((uint)i, 2));
+
+            await using (var wal = new WriteAheadLog(dbPath, new WalIndex()))
+            {
+                await wal.OpenAsync(2, ct);
+                await (await wal.AppendFramesAndCommitAsync(
+                    original.Select(p => new WalFrameWrite(p.Key, p.Value)).ToArray(), 2, ct)).WaitAsync(ct);
+                await wal.CheckpointAsync(device, 2, ct, allowFinalize: false);
+
+                // The small copied prefix makes source and destination overlap
+                // during larger moves. The last commit replaces a prior page;
+                // its marker may sit in a partial final chunk.
+                await (await wal.AppendFramesAndCommitAsync(
+                    expected.Select(p => new WalFrameWrite(p.Key, p.Value)).ToArray(), pageCount, ct)).WaitAsync(ct);
+                expected[0] = CreatePage(0, 3);
+                await (await wal.AppendFramesAndCommitAsync(
+                    new[] { new WalFrameWrite(0, expected[0]) }, pageCount, ct)).WaitAsync(ct);
+
+                long generationBeforeCompaction = wal.Index.CommitCounter;
+                await wal.CheckpointAsync(device, pageCount, ct);
+                Assert.False(wal.HasPendingCheckpoint);
+                Assert.Equal(retainedFrameCount, wal.Index.FrameCount);
+                Assert.Equal(generationBeforeCompaction + 2, wal.Index.CommitCounter);
+                Assert.Equal(PageConstants.WalHeaderSize + (long)retainedFrameCount * PageConstants.WalFrameSize,
+                    new FileInfo(dbPath + ".wal").Length);
+                await AssertPagesAsync(device, original, ct);
+                await AssertWalPagesAsync(wal, expected, ct);
+            }
+
+            await using (var reopened = new WriteAheadLog(dbPath, new WalIndex()))
+            {
+                await reopened.OpenAsync(2, ct);
+                Assert.Equal(retainedFrameCount, reopened.Index.FrameCount);
+                Assert.Equal(2L, reopened.Index.CommitCounter);
+                await AssertWalPagesAsync(reopened, expected, ct);
+
+                // A new append must start after the relocated suffix.
+                expected[pageCount] = CreatePage(pageCount, 4);
+                await (await reopened.AppendFramesAndCommitAsync(
+                    new[] { new WalFrameWrite(pageCount, expected[pageCount]) }, pageCount + 1, ct)).WaitAsync(ct);
+                await reopened.CheckpointAsync(device, pageCount + 1, ct);
+                Assert.Equal(0, reopened.Index.FrameCount);
+                await AssertPagesAsync(device, expected, ct);
+            }
+        }
+        finally
+        {
+            if (File.Exists(dbPath + ".wal")) File.Delete(dbPath + ".wal");
+            if (File.Exists(dbPath)) File.Delete(dbPath);
+        }
+    }
+
+    private static async Task AssertWalPagesAsync(
+        WriteAheadLog wal, Dictionary<uint, byte[]> expected, CancellationToken ct)
+    {
+        foreach (var (pageId, page) in expected)
+        {
+            Assert.True(wal.Index.TryGetLatest(pageId, out long offset));
+            Assert.Equal(page, await wal.ReadPageAsync(offset, ct));
+        }
+    }
+
     [Fact]
     public async Task IncrementalCheckpoint_GrowingCommits_ResizeOnlyForTheirOwnCopy()
     {

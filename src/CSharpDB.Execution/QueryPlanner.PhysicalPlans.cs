@@ -509,6 +509,7 @@ public sealed partial class QueryPlanner
                 ? TryBuildIndexScan(tableName, where, schema, out remainingWhere)
                   ?? TryBuildIntegerIndexRangeScan(tableName, where, schema, out remainingWhere)
                   ?? TryBuildOrderedTextIndexRangeScan(tableName, where, schema, out remainingWhere)
+                  ?? TryBuildPrimaryKeyRangeScan(tableName, where, schema, out remainingWhere)
                   ?? new TableScanOperator(
                       tree,
                       schema,

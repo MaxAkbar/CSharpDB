@@ -11530,7 +11530,8 @@ public sealed partial class QueryPlanner
         {
             indexedSource = TryBuildIndexScan(tableName, where, schema, out remainingWhere)
                 ?? TryBuildIntegerIndexRangeScan(tableName, where, schema, out remainingWhere)
-                ?? TryBuildOrderedTextIndexRangeScan(tableName, where, schema, out remainingWhere);
+                ?? TryBuildOrderedTextIndexRangeScan(tableName, where, schema, out remainingWhere)
+                ?? TryBuildPrimaryKeyRangeScan(tableName, where, schema, out remainingWhere);
         }
 
         if (indexedSource != null)
@@ -11624,6 +11625,9 @@ public sealed partial class QueryPlanner
                 return true;
             case PrimaryKeyLookupOperator primaryKeyLookup:
                 rowId = primaryKeyLookup.CurrentRowId;
+                return true;
+            case PrimaryKeyRangeScanOperator primaryKeyRange:
+                rowId = primaryKeyRange.CurrentRowId;
                 return true;
             case IndexScanOperator indexScan:
                 rowId = indexScan.CurrentRowId;
@@ -15922,7 +15926,7 @@ public sealed partial class QueryPlanner
 
     #region Index Scan Selection
 
-    // SELECT fallback only: keep existing equality lookup choices and mutation paths unchanged.
+    // Bounded table-tree fallback after existing equality and secondary-index choices.
     private IOperator? TryBuildPrimaryKeyRangeScan(
         string tableName,
         Expression where,

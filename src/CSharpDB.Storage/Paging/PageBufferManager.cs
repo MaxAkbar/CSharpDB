@@ -526,6 +526,30 @@ internal sealed class PageBufferManager
         return EnsurePageInCacheAndPinAsync(pageId, getPageAsync, ct);
     }
 
+    internal void MarkDirty(uint pageId, byte[] page)
+    {
+        if (_isSnapshotReader)
+            throw new InvalidOperationException("Cannot modify pages on a read-only snapshot pager.");
+
+        lock (_stateGate)
+        {
+            _dirtyPages.Add(pageId);
+            _readOnlyPages.Remove(pageId);
+            if (TryGetCachedEntryLocked(pageId, out var cached, out _) != CachedPageKind.Owned ||
+                !ReferenceEquals(cached, page))
+            {
+                SetSharedCacheLocked(pageId, page);
+            }
+
+            // Replacing an entry can report eviction of its old buffer. The
+            // newly registered buffer is now authoritative for this page id.
+            if (_useEvictionDrivenDirtyBufferTracking)
+                _dirtyBuffers.Remove(pageId);
+            else
+                PinDirtyBufferLocked(pageId, page);
+        }
+    }
+
     public void AddDirty(uint pageId)
     {
         lock (_stateGate)
