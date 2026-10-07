@@ -86,10 +86,9 @@
                     <ul>
                         <li><strong>Queries:</strong> reuse prepared SELECT plans, bound integer primary-key ranges, and preserve reader catalog snapshots across commits and checkpoints.</li>
                         <li><strong>Execution:</strong> reduce scan, LIMIT, prefetch, and INSERT allocations while preserving row and storage-page ownership.</li>
-                        <li><strong>Durable writes:</strong> reduce checkpoint stalls and strengthen WAL lifecycle regression coverage.</li>
+                        <li><strong>Durable writes:</strong> reduce checkpoint stalls and improve WAL lifecycle handling.</li>
                         <li><strong>Qualification:</strong> validate performance evidence integrity and reject incomplete comparisons.</li>
                     </ul>
-                    <p class="release-note">No database file-format revision is introduced. Experimental WAL format research remains outside the shipped implementation. Targeted local measurements do not replace the benchmark scorecard or release qualification.</p>
                 </article>
                 <h2 id="published-releases">Published releases</h2>
                 <article class="news-entry" id="v4.6.5" data-release-status="published" data-release-version="4.6.5">
