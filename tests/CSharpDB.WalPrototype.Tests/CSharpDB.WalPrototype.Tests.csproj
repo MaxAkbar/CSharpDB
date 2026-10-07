@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="../TestDefaults.props" />
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <UseSharedCompilation>false</UseSharedCompilation>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/CSharpDB.Storage/Integrity/AdditiveChecksumProvider.cs" Link="Shared/AdditiveChecksumProvider.cs" />
+    <Compile Include="../../src/CSharpDB.Storage/Integrity/IPageChecksumProvider.cs" Link="Shared/IPageChecksumProvider.cs" />
+    <ProjectReference Include="../CSharpDB.WalPrototype.CrashHarness/CSharpDB.WalPrototype.CrashHarness.csproj" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+  <Target Name="CopyCrashWorker" AfterTargets="Build">
+    <ItemGroup>
+      <CrashWorkerFiles Include="../CSharpDB.WalPrototype.CrashHarness/bin/$(Configuration)/net10.0/*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(CrashWorkerFiles)" DestinationFolder="$(OutDir)crash-worker" />
+  </Target>
+  <!-- Deliberately no product references or solution entry: fresh-file format experiment only. -->
+</Project>

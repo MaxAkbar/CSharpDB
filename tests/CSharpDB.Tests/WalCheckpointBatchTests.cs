@@ -7,6 +7,76 @@ namespace CSharpDB.Tests;
 public class WalCheckpointBatchTests
 {
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Checkpoint_InvalidCopiedPrefix_PreservesLaterCommitAfterReopen(bool corruptSupersededFrame)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_checkpoint_prefix_reopen_{Guid.NewGuid():N}.db");
+        byte[] page0 = CreatePage(0, 1);
+        byte[] page1 = CreatePage(1, 1);
+        byte[] replacedPage1 = CreatePage(1, 2);
+        byte[] retainedPage2 = CreatePage(2, 3);
+        try
+        {
+            await using (var device = new FileStorageDevice(dbPath, createNew: true))
+            await using (var wal = new WriteAheadLog(dbPath, new WalIndex()))
+            {
+                await wal.OpenAsync(3, ct);
+                await (await wal.AppendFramesAndCommitAsync(
+                    new[] { new WalFrameWrite(0, page0), new WalFrameWrite(1, page1) }, 3, ct)).WaitAsync(ct);
+                await (await wal.AppendFramesAndCommitAsync(
+                    new[] { new WalFrameWrite(1, replacedPage1) }, 3, ct)).WaitAsync(ct);
+
+                // An indexed invalid frame triggers repair. An invalid older
+                // version is absent from the latest-page map, but recovery
+                // would still encounter it if finalization left it on disk.
+                int corruptFrame = corruptSupersededFrame ? 1 : 2;
+                using (var handle = File.OpenHandle(dbPath + ".wal", FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite))
+                {
+                    long offset = PageConstants.WalHeaderSize + (long)corruptFrame * PageConstants.WalFrameSize;
+                    byte[] value = new byte[1];
+                    Assert.Equal(1, RandomAccess.Read(handle, value, offset));
+                    value[0] ^= 0x80;
+                    RandomAccess.Write(handle, value, offset);
+                    RandomAccess.FlushToDisk(handle);
+                }
+
+                await wal.CheckpointAsync(device, 3, ct, allowFinalize: false);
+                Assert.True(wal.IsCheckpointCopyComplete);
+                Assert.True(wal.TryGetCheckpointRetainedWalStartOffset(out long retainedStart));
+                Assert.Equal(PageConstants.WalHeaderSize + 3L * PageConstants.WalFrameSize, retainedStart);
+
+                await (await wal.AppendFramesAndCommitAsync(
+                    new[] { new WalFrameWrite(2, retainedPage2) }, 3, ct)).WaitAsync(ct);
+                await wal.CheckpointAsync(device, 3, ct);
+                Assert.False(wal.HasPendingCheckpoint);
+                Assert.Equal(1, wal.Index.FrameCount);
+            }
+
+            // Reopen before copying the retained commit into the database.
+            // It must remain recoverable despite the discarded invalid prefix.
+            await using (var device = new FileStorageDevice(dbPath))
+            await using (var reopened = new WriteAheadLog(dbPath, new WalIndex()))
+            {
+                await reopened.OpenAsync(3, ct);
+                Assert.Equal(1, reopened.Index.FrameCount);
+                await AssertWalPagesAsync(reopened, new() { [2] = retainedPage2 }, ct);
+                byte[] actual = new byte[PageConstants.PageSize];
+                Assert.Equal(PageConstants.PageSize, await device.ReadAsync(0, actual, ct));
+                Assert.Equal(page0, actual);
+                Assert.Equal(PageConstants.PageSize, await device.ReadAsync(PageConstants.PageSize, actual, ct));
+                Assert.Equal(corruptSupersededFrame ? replacedPage1 : page1, actual);
+            }
+        }
+        finally
+        {
+            if (File.Exists(dbPath + ".wal")) File.Delete(dbPath + ".wal");
+            if (File.Exists(dbPath)) File.Delete(dbPath);
+        }
+    }
+
+    [Theory]
     [InlineData(16)]
     [InlineData(17)]
     [InlineData(127)]
