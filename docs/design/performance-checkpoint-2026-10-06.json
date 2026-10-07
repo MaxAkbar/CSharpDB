@@ -118,5 +118,12 @@
       "manifestSha256": "02FE4CC1829693144FB0482D195E6FEDDB86F50EF0489D0F99AC7D858C9B6282"
     }
   ],
-  "limitations": "Raw evidence remains in ignored local .tmp directories; this inventory does not contain or back up raw captures. Results are retained prior runs whose hashes were reverified for this checkpoint. No tests or performance workloads were repeated."
+  "retention": {
+    "date": "2026-10-06",
+    "status": "raw-data-and-captured-binaries-discarded-at-user-request",
+    "primaryResultReportsRetained": true,
+    "fullArtifactReverificationAvailable": false,
+    "deletionReport": ".tmp/cleanup-20261006/retained-data-deletion.json"
+  },
+  "limitations": "The hashes record successful verification at the original checkpoint. A later user-requested cleanup on October 6, 2026 removed bulky databases, traces, per-event captures and captured binaries. Compact result tables, summaries, source records and test logs remain. Original manifests are historical receipts and no longer describe complete local bundles. No tests or performance workloads were repeated."
 }

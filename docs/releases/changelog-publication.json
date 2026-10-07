@@ -1,12 +1,16 @@
 {
   "coverageFrom": "3.8.0",
-  "verifiedOn": "2026-09-28",
+  "verifiedOn": "2026-10-06",
   "source": "https://api.github.com/repos/MaxAkbar/CSharpDB/releases",
   "notesReview": {
-    "version": "4.6.5",
-    "sha256": "e458656bf825821ec4b29859d13f5283dc114d0a288e77dcf4b02623cf08b0fe"
+    "version": "4.6.6",
+    "sha256": "96ddf2eedfbec12dc1947777742e7b7b33a8c649b2011ddd144576fb25fb3e2f"
   },
   "releases": [
+    {
+      "version": "4.6.5",
+      "publishedDate": "2026-09-28"
+    },
     {
       "version": "4.6.4",
       "publishedDate": "2026-09-12"

@@ -107,10 +107,17 @@ engine qualification.
 ## Evidence and resumption
 
 The [evidence inventory](performance-checkpoint-2026-10-06.json) records product
-identity, result hashes, prototype source hashes and sealed study manifests.
-Raw captures, frozen binaries and crash fixtures remain local under ignored
-`.tmp/` directories. This Git checkpoint preserves source and conclusions; it
-does not back up those raw artifacts or make them available in a fresh clone.
+identity, result hashes, prototype source hashes and historical study manifests.
+At the original checkpoint, raw captures, frozen binaries and crash fixtures
+remained local under ignored `.tmp/` directories. On October 6, 2026, a later
+user-requested cleanup removed the bulky databases, traces, per-event captures
+and captured binaries. Compact result tables, summaries, source records and
+test logs remain available. The original manifests are historical receipts;
+complete artifact re-verification is no longer available for the pruned bundles.
+Deletion details are recorded in
+`.tmp/cleanup-20261006/retained-data-deletion.json` and its per-file journal.
+This Git checkpoint preserves source and conclusions and does not back up raw
+artifacts or make them available in a fresh clone.
 Historical `committed: false` receipts describe the end of each study and remain
 unchanged by this later checkpoint.
 
