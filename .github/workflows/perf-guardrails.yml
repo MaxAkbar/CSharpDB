@@ -103,7 +103,7 @@ jobs:
             -HeadRoot .tmp/perf-guardrails/head `
             -OutputPath .tmp/perf-guardrails/evidence `
             -Configuration Release -Mode $mode -NoFailOnRegression:$reportOnly `
-            -MicroArguments @('--warmupCount', '2', '--iterationCount', '3', '--iterationTime', '100')
+            -MicroArguments @('--warmupCount', '2', '--iterationCount', '3', '--iterationTime', '100', '--buildTimeout', '600')
 
       - name: Upload Perf Artifacts
         if: always()
