@@ -168,7 +168,7 @@ public sealed class MigrationReleasePackagingTests
         string[] requiredLayout =
         [
             "adapters/sqlserver/csharpdb-migration-sqlserver-worker",
-            "adapters/sqlserver/licenses/Microsoft.Data.SqlClient.SNI.runtime-6.0.3-LICENSE.txt",
+            "adapters/sqlserver/licenses/Microsoft.Data.SqlClient.SNI.runtime-7.1.0-LICENSE.txt",
             "adapters/mysql/csharpdb-migration-mysql-worker",
             "adapters/access/csharpdb-migration-access-worker",
             "adapters/access/CSharpDB.Migration.Access.dll",
@@ -343,7 +343,7 @@ public sealed class MigrationReleasePackagingTests
                 StringComparison.Ordinal));
 
         Assert.Equal(
-            "6.0.3",
+            "7.1.0",
             (string?)packageReference.Attribute("Version"));
         Assert.Equal(
             "all",
@@ -357,7 +357,7 @@ public sealed class MigrationReleasePackagingTests
             "scripts",
             "Publish-CSharpDbSqlServerMigrationBundle.ps1");
         Assert.Contains(
-            "'Microsoft.Data.SqlClient.SNI.runtime/6.0.3'",
+            "'Microsoft.Data.SqlClient.SNI.runtime/7.1.0'",
             publisher,
             StringComparison.Ordinal);
         Assert.Contains(
@@ -559,7 +559,7 @@ public sealed class MigrationReleasePackagingTests
                 installer,
                 StringComparison.Ordinal);
             Assert.Contains(
-                "adapters/sqlserver/licenses/Microsoft.Data.SqlClient.SNI.runtime-6.0.3-LICENSE.txt",
+                "adapters/sqlserver/licenses/Microsoft.Data.SqlClient.SNI.runtime-7.1.0-LICENSE.txt",
                 installer,
                 StringComparison.Ordinal);
             Assert.Contains(
@@ -752,7 +752,7 @@ public sealed class MigrationReleasePackagingTests
                     "sql server worker",
                 ["adapters/sqlserver/THIRD-PARTY-NOTICES.md"] =
                     "sql server notices",
-                ["adapters/sqlserver/licenses/Microsoft.Data.SqlClient.SNI.runtime-6.0.3-LICENSE.txt"] =
+                ["adapters/sqlserver/licenses/Microsoft.Data.SqlClient.SNI.runtime-7.1.0-LICENSE.txt"] =
                     "SNI license",
                 [$"adapters/mysql/csharpdb-migration-mysql-worker{executableSuffix}"] =
                     "mysql worker",
