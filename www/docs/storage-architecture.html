@@ -224,8 +224,12 @@
                             <td style="padding: 8px 12px;">Serializes checkpoint operations</td>
                         </tr>
                         <tr style="border-bottom: 1px solid var(--border);">
-                            <td style="padding: 8px 12px;">Active reader counter</td>
-                            <td style="padding: 8px 12px;">Prevents checkpoint while snapshot readers are alive</td>
+                            <td style="padding: 8px 12px;">Registered reader snapshots</td>
+                            <td style="padding: 8px 12px;">Protect page visibility during copying and retain WAL offsets until readers release them</td>
+                        </tr>
+                        <tr style="border-bottom: 1px solid var(--border);">
+                            <td style="padding: 8px 12px;">Commit mutex and begin/writer barriers</td>
+                            <td style="padding: 8px 12px;">Coordinate checkpoint finalization with write-conflict reads and commit admission</td>
                         </tr>
                         <tr>
                             <td style="padding: 8px 12px;">Immutable <code>WalSnapshot</code></td>
@@ -241,8 +245,9 @@
 
 <span class="cm">// CommitAsync</span>
 <span class="cm">// → writes all dirty pages as WAL frames</span>
-<span class="cm">// → WAL commits (mark final frame + flush)</span>
-<span class="cm">// → clears dirty set, releases writer lock</span>
+<span class="cm">// → releases the legacy writer lock after append</span>
+<span class="cm">// → waits for durable flush and committed-state publication</span>
+<span class="cm">// → completes commit; pending publication prevents checkpoint finalization</span>
 
 <span class="cm">// RollbackAsync</span>
 <span class="cm">// → truncates uncommitted WAL frames</span>
@@ -253,8 +258,9 @@
                 <h4>Checkpoint Behavior</h4>
                 <ul>
                     <li>Triggered manually or automatically when WAL frame count threshold is reached</li>
-                    <li>Skips if active readers hold snapshots</li>
-                    <li>Applies committed WAL pages back into main DB file and resets WAL/index</li>
+                    <li>Copies a captured committed boundary to the main DB file only when registered readers' page visibility is preserved</li>
+                    <li>Defers finalization while registered snapshots retain WAL frames or durable commits own unpublished offsets</li>
+                    <li>Finalization acquires the commit mutex before the begin barrier, writer barrier, and checkpoint admission; it holds them through reset or retained-tail compaction and pager state refresh, releasing in reverse order on completion, cancellation, or error</li>
                 </ul>
 
                 <h3 id="wal">Durability &amp; Recovery: <code>WriteAheadLog</code> + <code>WalIndex</code></h3>
@@ -265,7 +271,7 @@
                     <li>Append page frames for dirty pages</li>
                     <li>Mark commit by rewriting final frame header (<code>dbPageCount</code>) + checksum + flush</li>
                     <li>Recover by scanning WAL, validating frame salts/checksums, rebuilding committed index, truncating partial/corrupt tail</li>
-                    <li>Checkpoint committed pages to DB file and reset WAL</li>
+                    <li>Checkpoint committed pages to DB file, then reset the WAL or compact a retained committed suffix under pager coordination</li>
                 </ul>
 
                 <h4><code>WalIndex</code></h4>
@@ -360,7 +366,7 @@
                     <li><code>Pager.BeginTransactionAsync</code> acquires writer lock and starts WAL transaction</li>
                     <li>Planner/catalog/BTree mutate page byte arrays</li>
                     <li>Modified pages are marked dirty in pager</li>
-                    <li><code>Pager.CommitAsync</code>: updates page 0 header &rarr; appends dirty pages to WAL &rarr; WAL commits (mark final frame + flush) &rarr; WAL index visible to future readers &rarr; writer lock released</li>
+                    <li><code>Pager.CommitAsync</code>: updates page 0 header &rarr; appends dirty pages and the commit marker to WAL &rarr; releases the legacy writer lock &rarr; waits for durable flush and committed-state publication before returning</li>
                     <li>Optional auto-checkpoint may run when threshold reached</li>
                 </ol>
 
@@ -379,7 +385,7 @@
                     <li>Reader acquires <code>WalSnapshot</code> from pager</li>
                     <li>Read-only snapshot pager is created</li>
                     <li>Page resolution uses snapshot mapping only; later commits are invisible</li>
-                    <li>On disposal, reader count decrements, allowing future checkpoint</li>
+                    <li>On disposal, reader registration is released, allowing deferred checkpoint copy or finalization to progress</li>
                 </ol>
 
                 <h3>Query Scans</h3>

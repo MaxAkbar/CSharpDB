@@ -4,7 +4,14 @@ Use an explicit durable recovery boundary to retire checkpointed WAL bytes,
 then reclaim the file through a quiescent full drain and generation reset.
 Two independently checksummed control records protect the boundary. This is a
 proposal for an isolated prototype; the production WAL format and behavior
-remain unchanged. No performance improvement has been established.
+are not changed by this prototype. No performance improvement has been established.
+
+Production v4.6.6 separately fixes checkpoint finalization racing with
+write-conflict WAL reads without changing either file format. Finalization takes
+the shared commit mutex before the begin/writer barriers and checkpoint admission,
+and defers while durable commits own unpublished offsets. Any future integration
+of this proposal must preserve that coordination. See the
+[storage guide](../../src/CSharpDB.Storage/README.md#checkpoint-coordination).
 
 The immediate target is the recurring cost of relocating a retained suffix
 after an incremental checkpoint. Current measurements show approximately

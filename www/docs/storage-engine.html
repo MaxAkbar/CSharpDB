@@ -322,6 +322,7 @@ long count = await tree.CountEntriesAsync();</code></pre>
                 </div>
 
                 <h3>Open, Write, and Checkpoint</h3>
+                <p>Use <code>Database.CheckpointAsync()</code> or the owning <code>Pager.CheckpointAsync()</code> for a live database. The direct WAL example below requires standalone, externally serialized use with no concurrent readers or writers. Wait for durable commit completion before checkpointing; the WAL updates its own index.</p>
                 <div class="code-block" data-title="C#">
                     <pre><code>var walIndex = new WalIndex();
 await using var wal = new WriteAheadLog("mydb.cdb", walIndex);
@@ -330,11 +331,11 @@ await wal.OpenAsync(currentDbPageCount: pager.PageCount);
 // Write transaction
 wal.BeginTransaction();
 await wal.AppendFrameAsync(pageId: 1, pageData);
-await wal.CommitAsync(newDbPageCount: pager.PageCount);
+WalCommitResult commit = await wal.CommitAsync(newDbPageCount: pager.PageCount);
+await commit.WaitAsync();
 
 // Checkpoint to main file
-await wal.CheckpointAsync(device, pageCount: pager.PageCount);
-walIndex.Reset();</code></pre>
+await wal.CheckpointAsync(device, pageCount: pager.PageCount);</code></pre>
                 </div>
 
                 <h2 id="slotted-page">Slotted Page Layout</h2>

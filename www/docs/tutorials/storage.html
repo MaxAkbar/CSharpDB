@@ -511,11 +511,13 @@ Console.WriteLine(<span class="str">$"Tree contains {count} entries."</span>);</
 <span class="kw">await</span> wal.AppendFrameAsync(pageId: <span class="num">1</span>, pageData);
 <span class="kw">await</span> wal.AppendFrameAsync(pageId: <span class="num">5</span>, pageData);
 
-<span class="kw">await</span> wal.CommitAsync(newDbPageCount: pager.PageCount);
+<span class="tp">WalCommitResult</span> commit = <span class="kw">await</span> wal.CommitAsync(newDbPageCount: pager.PageCount);
+<span class="kw">await</span> commit.WaitAsync(); <span class="cm">// durable flush and reader visibility</span>
 <span class="cm">// Or rollback: await wal.RollbackAsync();</span></code></pre>
                 </div>
 
                 <h3>W3. Reader Snapshot</h3>
+                <p>This low-level index snapshot does not register a reader with the pager. Keep checkpoint reset and compaction excluded until all reads using its offsets finish. For concurrent database reads, use <code>ReaderSession</code> or the pager's registered snapshot API shown above.</p>
                 <div class="code-block" data-title="WAL Snapshot">
                     <pre><code><span class="tp">WalSnapshot</span> snapshot = walIndex.TakeSnapshot();
 
@@ -526,10 +528,11 @@ Console.WriteLine(<span class="str">$"Tree contains {count} entries."</span>);</
                 </div>
 
                 <h3>W4. Checkpoint</h3>
+                <p>For a live database, call <code>Database.CheckpointAsync()</code> or the owning <code>Pager.CheckpointAsync()</code>. The pager protects registered readers, coordinates finalization with write-conflict resolution, and defers finalization while durable commits have unpublished offsets. Finalization may reset the WAL or compact a retained committed tail.</p>
+                <p>The direct WAL call below is for standalone, externally serialized low-level use with no active readers, writers, or pending commits. The WAL updates its own index; do not reset the index separately.</p>
                 <div class="code-block" data-title="Checkpoint">
                     <pre><code><span class="kw">await</span> wal.CheckpointAsync(device, pageCount: pager.PageCount);
-walIndex.Reset();
-<span class="cm">// WAL is now empty; all data is in the main file</span></code></pre>
+<span class="cm">// In this quiescent example, all committed data is in the main file</span></code></pre>
                 </div>
 
                 <!-- ───────────────── Slotted Page ───────────────── -->

@@ -217,6 +217,7 @@
                 </tbody>
                 </table>
                 <p>Plan classifications are cached (up to 1024 entries) so repeated queries skip re-analysis.</p>
+                <p>Eligible prepared <code>SELECT</code> queries reuse integer-key plans across parameter values. Each execution owns its bound values and cursor, and schema changes invalidate live cached plans. Simple physical integer primary-key ranges can use bounded B+tree scans in both prepared and ordinary queries; residual predicates still apply. Unsupported prepared shapes use ordinary binding and planning. Snapshot readers resolve table roots and schema metadata from their captured catalog.</p>
                 <h3 id="cardinality-estimation">Cardinality Estimation</h3>
                 <p>When <code>ANALYZE</code> has been run on a table, the <code>CardinalityEstimator</code> uses collected statistics
                 to estimate result sizes and guide operator selection.</p>
@@ -401,6 +402,10 @@
                 <tr>
                 <td><code>PrimaryKeyLookupOperator</code></td>
                 <td>Direct row lookup by integer PK. Fastest scan path.</td>
+                </tr>
+                <tr>
+                <td><code>PrimaryKeyRangeScanOperator</code></td>
+                <td>Bounded scan over the table's physical integer primary key with projection pushdown.</td>
                 </tr>
                 <tr>
                 <td><code>UniqueIndexLookupOperator</code></td>

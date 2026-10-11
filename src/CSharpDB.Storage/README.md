@@ -317,6 +317,32 @@ Separately from durable flush tuning, the storage write path now does partial as
 
 The current crash-level durability coverage is process-based rather than mock-based. The test suite now verifies recovery after a real process crash at four points: immediately after commit returns, at checkpoint start, after checkpoint page copies have been flushed to the main DB file, and after WAL checkpoint finalization but before pager state refresh completes.
 
+## Checkpoint coordination
+
+Use `Database.CheckpointAsync()` or the owning `Pager.CheckpointAsync()` for a
+live database. Checkpoint copying preserves registered readers' page visibility;
+finalization waits until no registered snapshot retains WAL frames. Finalization
+resets an empty tail or compacts frames committed after the captured copy boundary.
+
+Finalization acquires the same commit mutex used by write-conflict resolution
+before the begin barrier, writer barrier, and checkpoint admission. It holds those
+reservations through WAL reset or compaction and pager state refresh, then releases
+them in reverse order on completion, cancellation, or error. Pending durable
+commits defer finalization because their unpublished frames still own physical
+offsets, including legacy commits that already released the writer lock.
+
+Direct `WalIndex.TakeSnapshot()` and `WriteAheadLog.ReadPageAsync(offset)` calls do
+not register a reader with the pager. Low-level callers must coordinate those
+reads and all pending writes with checkpointing themselves: a retained offset can
+become invalid or point to a different page after reset or compaction. Prefer
+`ReaderSession` at the engine layer or the pager's registered snapshot API.
+
+The [deterministic regressions](../../tests/CSharpDB.Tests/CheckpointConflictReadTests.cs)
+cover reset, retained-tail compaction, stale offsets within file bounds,
+cancellation, lock release, and subsequent commit/checkpoint progress. The original
+CI interleaving was not captured; these tests reproduce the failure mechanism.
+The production database and WAL formats remain unchanged.
+
 ## Low-level use: open the storage graph directly
 
 If you need direct access to `Pager`, `SchemaCatalog`, or `BTree`, use the default storage engine factory:

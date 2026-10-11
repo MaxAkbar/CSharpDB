@@ -22,6 +22,8 @@ Query planner, operator tree, and expression evaluator for the [CSharpDB](https:
 - Compiled expression cache (up to 4096 entries) for repeated queries
 - Trigger body caching with schema-sensitive invalidation
 - Sync point-lookup fast path for `SELECT ... WHERE pk = value`
+- Bounded scans over physical integer primary keys for compatible range predicates, preserving residual filters and projection
+- Reuse eligible prepared integer-key SELECT plans across parameter values; each execution owns its bounds and cursor, and unsupported shapes use ordinary planning
 - Persisted row-count reuse for `COUNT(*)`, planner cardinality estimates, skew-aware equality/`IN` estimation from heavy hitters, histogram-backed numeric range estimates, composite-prefix correlation modeling for multi-column filters/joins, public `EXPLAIN ESTIMATE FOR <query>` diagnostics, and bounded small-chain inner-join reordering
 - Broad key-only `INNER JOIN`s over declared `INTEGER` primary-key/foreign-key relationships are automatically cost-gated onto the maintained foreign-key support index. Text keys, payload or opaque projections, predicates or residuals, outer or reversed joins, `LIMIT`/`OFFSET`, and point or small scans retain the general planner path.
 

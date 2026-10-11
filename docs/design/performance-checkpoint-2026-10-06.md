@@ -1,5 +1,13 @@
 # Performance checkpoint: October 6, 2026
 
+This is a historical checkpoint for product commit `860d7ee6`, not qualification
+of the current branch head. Subsequent v4.6.6 changes fixed checkpoint finalization
+racing with write-conflict WAL reads and removed the recorded xUnit1069 warning.
+The original results and evidence identities below remain unchanged. The added
+finalization synchronization has not received a new performance qualification.
+See the [current release notes](../../RELEASE_NOTES.md) and
+[checkpoint coordination](../../src/CSharpDB.Storage/README.md#checkpoint-coordination).
+
 The current performance pass is complete. Product code at `860d7ee6` retains
 the adopted improvements and its 3,803-test correctness qualification. The
 combined representative comparison passed its declared local performance
