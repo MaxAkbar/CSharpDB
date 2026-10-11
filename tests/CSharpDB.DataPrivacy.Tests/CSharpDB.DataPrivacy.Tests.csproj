@@ -4,4 +4,11 @@
     <OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><IsPackable>false</IsPackable>
   </PropertyGroup>
   <ItemGroup><ProjectReference Include="..\..\src\CSharpDB.Admin\CSharpDB.Admin.csproj" /></ItemGroup>
+  <ItemGroup>
+    <PackageReference Update="coverlet.collector" Version="10.1.0" />
+    <PackageReference Update="Microsoft.NET.Test.Sdk" Version="18.10.1" />
+    <PackageReference Update="Microsoft.Testing.Extensions.TrxReport" Version="2.5.1" />
+    <PackageReference Update="xunit.runner.visualstudio" Version="4.0.1" />
+    <PackageReference Update="xunit.v3" Version="4.0.2" />
+  </ItemGroup>
 </Project>

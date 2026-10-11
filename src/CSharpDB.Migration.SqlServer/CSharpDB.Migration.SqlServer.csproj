@@ -15,8 +15,8 @@
     <ProjectReference Include="..\CSharpDB.Migration.Compatibility\CSharpDB.Migration.Compatibility.csproj" />
     <ProjectReference Include="..\CSharpDB.Migration.CSharpDb.Ddl\CSharpDB.Migration.CSharpDb.Ddl.csproj" />
     <ProjectReference Include="..\CSharpDB.Migration.Retained\CSharpDB.Migration.Retained.csproj" />
-    <PackageReference Include="Microsoft.Data.SqlClient" Version="7.0.3" />
-    <PackageReference Include="Microsoft.SqlServer.TransactSql.ScriptDom" Version="180.107.0" />
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="7.1.1" />
+    <PackageReference Include="Microsoft.SqlServer.TransactSql.ScriptDom" Version="180.117.0" />
   </ItemGroup>
 
   <ItemGroup>
