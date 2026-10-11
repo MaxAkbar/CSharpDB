@@ -3149,10 +3149,19 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
         PublishRuntimeCheckpointChanged(StorageCheckpointPhaseRaw.Requested);
         _checkpoints.SetRuntimePhaseUnlessFaulted(StorageCheckpointPhaseRaw.Requested);
+        IDisposable? commitLock = null;
         IDisposable? checkpointBarrier = null;
 
         try
         {
+            // Conflict resolution (including parent/split and freelist reads) holds
+            // the commit lock while using latest WAL offsets, even when its snapshot
+            // retains no frames. Keep those offsets stable through finalization and
+            // state refresh. Take commit before begin/writer, matching explicit commit
+            // admission; taking begin first would deadlock a resolving writer.
+            commitLock = _transactions is not null
+                ? await _transactions.AcquireCommitLockAsync(ct)
+                : null;
             checkpointBarrier = _transactions is not null
                 ? await _transactions.AcquireCheckpointBarrierAsync(ct)
                 : null;
@@ -3167,6 +3176,17 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                         !_wal.HasPendingCheckpoint ||
                         !_wal.IsCheckpointCopyComplete)
                     {
+                        UpdateCheckpointRuntimePhaseAfterCopy();
+                        return;
+                    }
+
+                    // Legacy writers release the writer lock after append, before
+                    // durable publication. Their pending batches still own physical
+                    // offsets. With both admission barriers held, no new batch can
+                    // start; defer until existing batches finish publishing.
+                    if (_wal.HasPendingCommitWork)
+                    {
+                        _checkpoints.RequestDeferredCheckpoint();
                         UpdateCheckpointRuntimePhaseAfterCopy();
                         return;
                     }
@@ -3208,6 +3228,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         finally
         {
             checkpointBarrier?.Dispose();
+            commitLock?.Dispose();
         }
     }
 
