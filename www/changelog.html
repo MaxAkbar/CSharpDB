@@ -87,6 +87,8 @@
                         <li><strong>Queries:</strong> reuse prepared SELECT plans, bound integer primary-key ranges, and preserve reader catalog snapshots across commits and checkpoints.</li>
                         <li><strong>Execution:</strong> reduce scan, LIMIT, prefetch, and INSERT allocations while preserving row and storage-page ownership.</li>
                         <li><strong>Durable writes:</strong> reduce checkpoint stalls and improve WAL lifecycle handling.</li>
+                        <li><strong>Storage correctness:</strong> prevent checkpoint reset and compaction from invalidating concurrent write-conflict WAL reads, and protect pending durable commit publication.</li>
+                        <li><strong>Dependencies:</strong> update client, migration, desktop, telemetry, and test packages while keeping the OpenAPI dependency compatible with .NET 10.</li>
                         <li><strong>Qualification:</strong> validate performance evidence integrity and reject incomplete comparisons.</li>
                     </ul>
                 </article>
