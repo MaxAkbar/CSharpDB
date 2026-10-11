@@ -201,6 +201,25 @@ public sealed class WriteTransaction : IAsyncDisposable
                 "The transaction was rolled back because an earlier write failed.");
         }
 
+        _database.BeginReaderCatalogPublication();
+        bool synchronized = false;
+        try
+        {
+            await CommitPublishingCoreAsync(ct);
+            synchronized = true;
+        }
+        finally
+        {
+            // Native conflict validation rejects before appending any WAL frames.
+            // Its isolated catalog never changed the shared catalog, so future
+            // readers can still capture it once other publications finish.
+            _database.EndReaderCatalogPublication(
+                synchronized || _storageTransaction.State.CommitRejectedBeforePublication);
+        }
+    }
+
+    private async ValueTask CommitPublishingCoreAsync(CancellationToken ct)
+    {
         PagerCommitResult commit;
         KeyValuePair<string, long>[] committedNextRowIds;
         KeyValuePair<string, long>[] committedTableRowCountDeltas;

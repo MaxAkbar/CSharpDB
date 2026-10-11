@@ -4,21 +4,21 @@ The optional SQL Server worker currently resolves the following NuGet runtime
 dependency closure. Packages marked MIT are covered by the copyright and MIT
 license terms below. `Microsoft.Data.SqlClient.SNI.runtime` uses separate
 Microsoft Software License Terms included at
-`licenses/Microsoft.Data.SqlClient.SNI.runtime-6.0.3-LICENSE.txt`.
+`licenses/Microsoft.Data.SqlClient.SNI.runtime-7.1.0-LICENSE.txt`.
 
 | Package | Version | License |
 | --- | --- | --- |
-| Microsoft.Bcl.Cryptography | 9.0.13 | MIT |
-| Microsoft.Data.SqlClient | 7.0.3 | MIT |
-| Microsoft.Data.SqlClient.Extensions.Abstractions | 7.0.3 | MIT |
-| Microsoft.Data.SqlClient.Internal.Logging | 7.0.3 | MIT |
-| Microsoft.Data.SqlClient.SNI.runtime | 6.0.3 | Microsoft Software License Terms |
-| Microsoft.Extensions.Caching.Abstractions | 9.0.13 | MIT |
-| Microsoft.Extensions.Caching.Memory | 9.0.13 | MIT |
+| Microsoft.Bcl.Cryptography | 9.0.18 | MIT |
+| Microsoft.Data.SqlClient | 7.1.1 | MIT |
+| Microsoft.Data.SqlClient.Extensions.Abstractions | 7.1.1 | MIT |
+| Microsoft.Data.SqlClient.Internal.Logging | 7.1.1 | MIT |
+| Microsoft.Data.SqlClient.SNI.runtime | 7.1.0 | Microsoft Software License Terms |
+| Microsoft.Extensions.Caching.Abstractions | 9.0.18 | MIT |
+| Microsoft.Extensions.Caching.Memory | 9.0.18 | MIT |
 | Microsoft.Extensions.DependencyInjection.Abstractions | 10.0.0 | MIT |
 | Microsoft.Extensions.Logging.Abstractions | 10.0.0 | MIT |
-| Microsoft.Extensions.Options | 9.0.13 | MIT |
-| Microsoft.Extensions.Primitives | 9.0.13 | MIT |
+| Microsoft.Extensions.Options | 9.0.18 | MIT |
+| Microsoft.Extensions.Primitives | 9.0.18 | MIT |
 | Microsoft.IdentityModel.Abstractions | 8.16.0 | MIT |
 | Microsoft.IdentityModel.JsonWebTokens | 8.16.0 | MIT |
 | Microsoft.IdentityModel.Logging | 8.16.0 | MIT |
@@ -26,17 +26,18 @@ Microsoft Software License Terms included at
 | Microsoft.IdentityModel.Protocols.OpenIdConnect | 8.16.0 | MIT |
 | Microsoft.IdentityModel.Tokens | 8.16.0 | MIT |
 | Microsoft.SqlServer.Server | 1.0.0 | MIT |
-| Microsoft.SqlServer.TransactSql.ScriptDom | 180.107.0 | MIT |
-| System.Configuration.ConfigurationManager | 9.0.13 | MIT |
-| System.Diagnostics.EventLog | 9.0.13 | MIT |
+| Microsoft.SqlServer.TransactSql.ScriptDom | 180.117.0 | MIT |
+| System.Configuration.ConfigurationManager | 9.0.18 | MIT |
+| System.Diagnostics.EventLog | 9.0.18 | MIT |
 | System.IdentityModel.Tokens.Jwt | 8.16.0 | MIT |
-| System.Security.Cryptography.Pkcs | 9.0.13 | MIT |
-| System.Security.Cryptography.ProtectedData | 9.0.13 | MIT |
+| System.Security.Cryptography.Pkcs | 9.0.18 | MIT |
+| System.Security.Cryptography.ProtectedData | 9.0.18 | MIT |
+| System.Threading.RateLimiting | 9.0.18 | MIT |
 
 ## Microsoft.Data.SqlClient
 
 - Package: Microsoft.Data.SqlClient
-- Version: 7.0.3
+- Version: 7.1.1
 - Project: https://github.com/dotnet/SqlClient
 - License: MIT
 
@@ -63,7 +64,7 @@ SOFTWARE.
 ## Microsoft.SqlServer.TransactSql.ScriptDom
 
 - Package: Microsoft.SqlServer.TransactSql.ScriptDom
-- Version: 180.107.0
+- Version: 180.117.0
 - Project: https://github.com/microsoft/SqlScriptDOM
 - License: MIT
 

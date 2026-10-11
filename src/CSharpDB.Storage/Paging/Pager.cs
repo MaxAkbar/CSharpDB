@@ -68,6 +68,10 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     private readonly object _legacyLogicalWriteGate = new();
     private readonly HashSet<LogicalConflictKey> _legacyLogicalWriteKeys = [];
     private int _disposeRequested;
+    private int _backgroundCheckpointWriterWaitCount;
+    private int _lastAppendedCommitPageCount;
+    private int _pendingLegacyCatalogCommits;
+    private int _legacyCatalogCaptureFailed;
     private bool _runtimeCheckpointActive;
     private StorageCheckpointOriginRaw _runtimeCheckpointOrigin;
     private long? _runtimeCheckpointCompletedPageCount;
@@ -146,7 +150,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     private long _hashedIndexAppendNotApplicableCount;
     private long _hashedIndexDeferredAppendCount;
     private long _hashedIndexDeferredFlushCount;
-    private readonly ConcurrentDictionary<string, BTreeResourceDiagnosticsCounter> _btreeResourceDiagnostics = new();
+    private readonly ConcurrentDictionary<string, BTreeResourceDiagnosticsCounter>? _btreeResourceDiagnostics;
     private readonly object _explicitCommitStateGate = new();
     private readonly Dictionary<uint, long> _explicitCachedPageVersions = new();
     private uint _scheduledExplicitPageCount;
@@ -376,6 +380,15 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         GetCurrentTransaction() is not null ||
         _transactions?.InTransaction == true;
 
+    // The caller holds its writer/catalog gates. Legacy shared metadata is
+    // committed only after every completion (including interceptors) finishes.
+    // Also reject a snapshot acquired before a just-completed publication.
+    internal bool CanCaptureCommittedCatalog(WalSnapshot snapshot) =>
+        !IsWriteTransactionActive &&
+        Volatile.Read(ref _pendingLegacyCatalogCommits) == 0 &&
+        Volatile.Read(ref _legacyCatalogCaptureFailed) == 0 &&
+        _walIndex.CommitCounter == snapshot.CommitCounter;
+
     internal bool RequiresLogicalWriteConflictTracking =>
         GetCurrentTransaction() is not null ||
         _transactions?.HasActiveExplicitTransactions == true;
@@ -546,7 +559,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         Interlocked.Exchange(ref _hashedIndexAppendNotApplicableCount, 0);
         Interlocked.Exchange(ref _hashedIndexDeferredAppendCount, 0);
         Interlocked.Exchange(ref _hashedIndexDeferredFlushCount, 0);
-        _btreeResourceDiagnostics.Clear();
+        _btreeResourceDiagnostics?.Clear();
     }
 
     // Configurable behavior
@@ -585,6 +598,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         IStorageRuntimeDiagnosticsObserver? runtimeDiagnosticsObserver = null)
     {
         _device = device;
+        _btreeResourceDiagnostics = new();
         _options = options ?? new PagerOptions();
         ValidateOptions(_options);
         _storageIoRuntimeDiagnostics = runtimeDiagnosticsObserver is null
@@ -683,15 +697,8 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             _isSnapshotReader,
             _interceptor,
             _storageIoRuntimeDiagnostics);
-        _allocator = new PageAllocator(
-            _buffers,
-            () => FreelistHead,
-            value => FreelistHead = value,
-            () => PageCount,
-            value => PageCount = value,
-            GetPageAsync,
-            MarkDirtyAsync,
-            () => _isSnapshotReader);
+        // Readers reject allocation/free without capturing unused writer state.
+        _allocator = ReadOnlyPageAllocator.Instance;
         CheckpointPolicy = _options.CheckpointPolicy;
 
         if (_options.CheckpointPolicy is FrameCountCheckpointPolicy framePolicy)
@@ -737,7 +744,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             _speculativePageReads is MemoryMappedPageReadProvider;
 
         var pageReads = needsDedicatedProviders
-            ? CreatePageReadProvider(_device, _options)
+            ? CreatePageReadProvider(_device, _options, copyMappedPages: false)
             : _pageReads;
 
         var speculativePageReads = needsDedicatedProviders
@@ -760,6 +767,24 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         reader.FreelistHead = FreelistHead;
         reader.ChangeCounter = ChangeCounter;
         return reader;
+    }
+
+    internal async ValueTask LoadSnapshotHeaderAsync(CancellationToken ct = default)
+    {
+        if (!_isSnapshotReader)
+            throw new InvalidOperationException("Snapshot header loading requires a snapshot reader.");
+        var page = await GetPageReadAsync(0, ct);
+        ReadFileHeaderFrom(page.Memory.Span);
+    }
+
+    internal void ApplySnapshotHeader(uint pageCount, uint schemaRootPage, uint freelistHead, uint changeCounter)
+    {
+        if (!_isSnapshotReader)
+            throw new InvalidOperationException("Snapshot header restoration requires a snapshot reader.");
+        PageCount = pageCount;
+        SchemaRootPage = schemaRootPage;
+        FreelistHead = freelistHead;
+        ChangeCounter = changeCounter;
     }
 
     /// <summary>
@@ -971,6 +996,26 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             ct);
     }
 
+    // Structural edits can retain a clean page across reads or allocations that
+    // evict it. Register the actual edited buffer, rather than reloading its id.
+    internal ValueTask MarkDirtyAsync(uint pageId, byte[] page, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(page);
+        if (page.Length != PageConstants.PageSize)
+            throw new ArgumentException("A dirty page must contain exactly one page of data.", nameof(page));
+
+        if (GetCurrentTransaction() is { } tx)
+        {
+            if (!tx.ModifiedPages.TryGetValue(pageId, out var owned) || !ReferenceEquals(owned, page))
+                throw new InvalidOperationException("The dirty buffer must belong to the current write transaction.");
+            tx.DirtyPages.Add(pageId);
+            return ValueTask.CompletedTask;
+        }
+
+        _buffers.MarkDirty(pageId, page);
+        return ValueTask.CompletedTask;
+    }
+
     /// <summary>
     /// Allocate a new page. Tries the freelist first, then extends the page count.
     /// In WAL mode, the DB file is NOT extended here — that happens during checkpoint.
@@ -1003,7 +1048,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         if (GetCurrentTransaction() != null || _transactions?.InTransaction == true)
             throw new CSharpDbException(ErrorCode.Unknown, "Nested transactions are not supported.");
 
-        await WaitForBackgroundCheckpointAsync(ct);
+        await WaitForBackgroundCheckpointForWriterAsync(ct);
         if (!_wal.IsOpen)
             await _wal.OpenAsync(PageCount, ct);
         await _transactions!.BeginAsync(_wal, _options.WriterLockTimeout, ct);
@@ -1091,7 +1136,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         if (_transactions is not null)
             await _transactions.WaitForSchemaBeginAsync(ct);
 
-        await WaitForBackgroundCheckpointAsync(ct);
+        await WaitForBackgroundCheckpointForWriterAsync(ct);
         if (!_wal.IsOpen)
             await _wal.OpenAsync(PageCount, ct);
 
@@ -1191,7 +1236,9 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         if (string.IsNullOrEmpty(resourceName))
             return;
 
-        BTreeResourceDiagnosticsCounter diagnostics = GetOrAddBTreeResourceDiagnostics(resourceName);
+        BTreeResourceDiagnosticsCounter? diagnostics = GetOrAddBTreeResourceDiagnostics(resourceName);
+        if (diagnostics is null)
+            return;
         Interlocked.Increment(ref diagnostics.LeafSplitCount);
         if (rightEdge)
             Interlocked.Increment(ref diagnostics.RightEdgeLeafSplitCount);
@@ -1209,7 +1256,9 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         if (string.IsNullOrEmpty(resourceName))
             return;
 
-        BTreeResourceDiagnosticsCounter diagnostics = GetOrAddBTreeResourceDiagnostics(resourceName);
+        BTreeResourceDiagnosticsCounter? diagnostics = GetOrAddBTreeResourceDiagnostics(resourceName);
+        if (diagnostics is null)
+            return;
         Interlocked.Increment(ref diagnostics.InteriorInsertCount);
         if (rightEdge)
             Interlocked.Increment(ref diagnostics.RightEdgeInteriorInsertCount);
@@ -1227,7 +1276,9 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         if (string.IsNullOrEmpty(resourceName))
             return;
 
-        BTreeResourceDiagnosticsCounter diagnostics = GetOrAddBTreeResourceDiagnostics(resourceName);
+        BTreeResourceDiagnosticsCounter? diagnostics = GetOrAddBTreeResourceDiagnostics(resourceName);
+        if (diagnostics is null)
+            return;
         Interlocked.Increment(ref diagnostics.InteriorSplitCount);
         if (rightEdge)
             Interlocked.Increment(ref diagnostics.RightEdgeInteriorSplitCount);
@@ -1242,7 +1293,9 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         if (string.IsNullOrEmpty(resourceName))
             return;
 
-        BTreeResourceDiagnosticsCounter diagnostics = GetOrAddBTreeResourceDiagnostics(resourceName);
+        BTreeResourceDiagnosticsCounter? diagnostics = GetOrAddBTreeResourceDiagnostics(resourceName);
+        if (diagnostics is null)
+            return;
         Interlocked.Increment(ref diagnostics.RootSplitCount);
     }
 
@@ -1705,6 +1758,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
     private async ValueTask<PagerCommitResult> BeginLegacyCommitAsync(CancellationToken ct)
     {
+        Interlocked.Increment(ref _pendingLegacyCatalogCommits);
         try
         {
             await EnsureBaseHeaderUsesCurrentFormatAsync(ct);
@@ -1721,10 +1775,26 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         }
         catch
         {
-            await RollbackAsync(CancellationToken.None);
-            await ResetPagerStateFromCommittedStorageAsync(CancellationToken.None);
+            try
+            {
+                await RollbackAsync(CancellationToken.None);
+                await ResetPagerStateFromCommittedStorageAsync(CancellationToken.None);
+            }
+            finally
+            {
+                CompleteLegacyCatalogCapture(succeeded: false);
+            }
             throw;
         }
+    }
+
+    private void CompleteLegacyCatalogCapture(bool succeeded)
+    {
+        // Failed durable work can leave Engine metadata ahead until recovery.
+        // Preserve the conservative fallback even if recovery itself fails.
+        if (!succeeded)
+            Volatile.Write(ref _legacyCatalogCaptureFailed, 1);
+        Interlocked.Decrement(ref _pendingLegacyCatalogCommits);
     }
 
     private async ValueTask<PagerCommitResult> BeginLegacyCommitWithInterceptorAsync(int dirtyCount, CancellationToken ct)
@@ -1764,7 +1834,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             }
 
             WalCommitResult commitResult = await PrepareWalCommitAsync(ct);
-            RecordWalAppendDiagnostics(walAppendStartTicks);
+            RecordWalAppendDiagnostics(walAppendStartTicks, dirtyCount);
             _buffers.ClearDirty();
             long transactionId = _transactions!.ReleaseWriterAfterCommitAppend();
             if (CanBypassLegacyPendingCommitReservation(commitResult))
@@ -1829,7 +1899,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                 ? await _wal.AppendFramesAndCommitAsync(frameBatch.AsMemory(0, frameCount), PageCount, ct)
                 : await _wal.CommitAsync(PageCount, ct);
 
-            RecordWalAppendDiagnostics(walAppendStartTicks);
+            RecordWalAppendDiagnostics(walAppendStartTicks, dirtyCount);
             _buffers.ClearDirty();
             long transactionId = _transactions!.ReleaseWriterAfterCommitAppend();
             if (CanBypassLegacyPendingCommitReservation(commitResult))
@@ -1867,17 +1937,23 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         long transactionId,
         TransactionCoordinator.PendingCommitReservation pendingCommitReservation)
     {
+        bool succeeded = false;
         try
         {
             await commitResult.WaitAsync();
             _transactions!.PublishPendingCommit(pendingCommitReservation);
             await FinalizeLegacyCommitAndCheckpointAsync(transactionId, CancellationToken.None);
+            succeeded = true;
         }
         catch
         {
             _transactions!.RevertPendingCommit(pendingCommitReservation);
             await ResetPagerStateFromCommittedStorageAsync(CancellationToken.None);
             throw;
+        }
+        finally
+        {
+            CompleteLegacyCatalogCapture(succeeded);
         }
     }
 
@@ -1886,14 +1962,20 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
     private async Task CompleteLegacyCommitWithoutPendingReservationCoreAsync(long transactionId)
     {
+        bool succeeded = false;
         try
         {
             await FinalizeLegacyCommitAndCheckpointAsync(transactionId, CancellationToken.None);
+            succeeded = true;
         }
         catch
         {
             await ResetPagerStateFromCommittedStorageAsync(CancellationToken.None);
             throw;
+        }
+        finally
+        {
+            CompleteLegacyCatalogCapture(succeeded);
         }
     }
 
@@ -1919,7 +2001,19 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         }
         finally
         {
-            await _interceptor.OnCommitEndAsync(dirtyCount, commitSucceeded, CancellationToken.None);
+            try
+            {
+                await _interceptor.OnCommitEndAsync(dirtyCount, commitSucceeded, CancellationToken.None);
+            }
+            catch
+            {
+                commitSucceeded = false;
+                throw;
+            }
+            finally
+            {
+                CompleteLegacyCatalogCapture(commitSucceeded);
+            }
         }
     }
 
@@ -1945,7 +2039,19 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         }
         finally
         {
-            await _interceptor.OnCommitEndAsync(dirtyCount, commitSucceeded, CancellationToken.None);
+            try
+            {
+                await _interceptor.OnCommitEndAsync(dirtyCount, commitSucceeded, CancellationToken.None);
+            }
+            catch
+            {
+                commitSucceeded = false;
+                throw;
+            }
+            finally
+            {
+                CompleteLegacyCatalogCapture(commitSucceeded);
+            }
         }
     }
 
@@ -2083,7 +2189,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                                     continue;
                                 }
 
-                                throw CreateTerminalExplicitConflictException(
+                                throw CreateTerminalExplicitConflictException(tx,
                                     $"Transaction conflict detected while committing page {conflictPageId}. The transaction must be retried.");
                             }
 
@@ -2162,7 +2268,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                                 walCommit = await _wal.AppendFramesAndCommitAsync(frameBatch, headerReservation.PageCount, ct);
                             }
 
-                            RecordWalAppendDiagnostics(walAppendStartTicks);
+                            RecordWalAppendDiagnostics(walAppendStartTicks, dirtyCount);
                             long pendingCommitReservationStartTicks = Stopwatch.GetTimestamp();
                             pendingCommitReservation = _transactions?.ReservePendingCommit(
                                     writePageIds,
@@ -2714,6 +2820,14 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
         await WaitForBackgroundCheckpointAsync(ct);
 
+        if (origin == StorageCheckpointOriginRaw.ForegroundAuto &&
+            _checkpoints is { ActiveReaderCount: > 0 } &&
+            (!_wal.IsCheckpointCopyComplete || _checkpoints.TryGetMinimumRetainedWalOffset(out _)))
+        {
+            _checkpoints.RequestDeferredCheckpoint();
+            return;
+        }
+
         await RunCheckpointWithInterceptorsAsync(origin, ct);
         if (!HasCheckpointWorkPending())
             _checkpoints?.ClearDeferredCheckpointRequest();
@@ -2737,6 +2851,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             {
                 await _checkpoints.RunCheckpointAsync(
                     frameCount,
+                    _wal.HasPendingCheckpoint,
                     async innerCt =>
                     {
                         checkpointRan = true;
@@ -2756,6 +2871,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         {
             await _checkpoints.RunCheckpointAsync(
                 frameCount,
+                _wal.HasPendingCheckpoint,
                 async innerCt =>
                 {
                     checkpointRan = true;
@@ -2774,6 +2890,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         if (_checkpoints is null)
             return;
 
+        long copiedPageBudget = 0;
         while (true)
         {
             if (!HasCheckpointWorkPending())
@@ -2786,11 +2903,39 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             if (!checkpointRan)
                 return;
 
+            copiedPageBudget += _options.AutoCheckpointMaxPagesPerStep;
             if (!HasCheckpointWorkPending())
             {
                 _checkpoints.ClearDeferredCheckpointRequest();
                 return;
             }
+
+            int lastCommitPageCount = Volatile.Read(ref _lastAppendedCommitPageCount);
+            // Small commits keep the full-drain behavior: interleaving a whole
+            // slice with each cheap transaction adds more maintenance overhead.
+            bool writerWaiting = Volatile.Read(ref _backgroundCheckpointWriterWaitCount) != 0 &&
+                lastCommitPageCount >= _options.AutoCheckpointMaxPagesPerStep;
+            // New commits retained after a completed copy belong to the next
+            // policy interval. Do not force a waiting writer to pay for tiny
+            // follow-up checkpoints below the configured threshold.
+            if (writerWaiting && !_wal.HasPendingCheckpoint &&
+                !_checkpoints.ShouldCheckpoint(
+                    CheckpointPolicy,
+                    _walIndex.FrameCount,
+                    CheckpointThreshold,
+                    EstimateCommittedWalBytes(_walIndex.FrameCount)))
+            {
+                _checkpoints.ClearDeferredCheckpointRequest();
+                return;
+            }
+
+            // Cover the last commit's copy budget before yielding during an
+            // incomplete copy. While idle, drain all slices to completion.
+            if (writerWaiting &&
+                copiedPageBudget >= Math.Max(
+                    _options.AutoCheckpointMaxPagesPerStep,
+                    lastCommitPageCount))
+                return;
 
             if (_checkpoints.TryGetMinimumRetainedWalOffset(out _) &&
                 _wal.IsCheckpointCopyComplete)
@@ -2818,6 +2963,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             {
                 await _checkpoints.RunCheckpointAsync(
                     frameCount,
+                    _wal.HasPendingCheckpoint,
                     async innerCt =>
                     {
                         checkpointRan = await RunCheckpointStepCoreAsync(
@@ -2840,6 +2986,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         {
             await _checkpoints.RunCheckpointAsync(
                 frameCount,
+                _wal.HasPendingCheckpoint,
                 async innerCt =>
                 {
                     checkpointRan = await RunCheckpointStepCoreAsync(
@@ -2869,6 +3016,9 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         bool wasCopyComplete = _wal.IsCheckpointCopyComplete;
         if (!wasCopyComplete)
         {
+            if (!await CanCopyCheckpointPagesAsync(ct))
+                return;
+
             ReportRuntimeCheckpointWorkStartedOrChanged(
                 origin,
                 StorageCheckpointPhaseRaw.Copying);
@@ -2910,6 +3060,9 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             return false;
         }
 
+        if (!await CanCopyCheckpointPagesAsync(ct))
+            return false;
+
         ReportRuntimeCheckpointWorkStartedOrChanged(
             origin,
             StorageCheckpointPhaseRaw.Copying);
@@ -2935,6 +3088,36 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             _checkpoints?.SetRuntimePhase(StorageCheckpointPhaseRaw.Faulted);
             throw;
         }
+    }
+
+    private async ValueTask<bool> CanCopyCheckpointPagesAsync(CancellationToken ct)
+    {
+        // Both callers hold the coordinator lock, keeping reader admission and
+        // release serialized with the complete prepare/check/copy operation.
+        if (_checkpoints is null || _checkpoints.ActiveReaderCount == 0)
+            return true;
+
+        try
+        {
+            if (_wal is IWalCheckpointCopyPlan copyPlan)
+            {
+                ReadOnlyMemory<KeyValuePair<uint, long>> pages =
+                    await copyPlan.PrepareCheckpointCopyAsync(PageCount, ct);
+                if (_checkpoints.CanCopyCheckpointPages(pages.Span))
+                    return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            CompleteRuntimeCheckpoint(ex);
+            _checkpoints.SetRuntimePhase(StorageCheckpointPhaseRaw.Faulted);
+            throw;
+        }
+
+        _checkpoints.RequestDeferredCheckpoint();
+        PublishRuntimeCheckpointChanged(StorageCheckpointPhaseRaw.Requested);
+        _checkpoints.SetRuntimePhaseUnlessFaulted(StorageCheckpointPhaseRaw.Requested);
+        return false;
     }
 
     private async ValueTask<bool> TryFinalizeCheckpointAsync(
@@ -2966,10 +3149,19 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
         PublishRuntimeCheckpointChanged(StorageCheckpointPhaseRaw.Requested);
         _checkpoints.SetRuntimePhaseUnlessFaulted(StorageCheckpointPhaseRaw.Requested);
+        IDisposable? commitLock = null;
         IDisposable? checkpointBarrier = null;
 
         try
         {
+            // Conflict resolution (including parent/split and freelist reads) holds
+            // the commit lock while using latest WAL offsets, even when its snapshot
+            // retains no frames. Keep those offsets stable through finalization and
+            // state refresh. Take commit before begin/writer, matching explicit commit
+            // admission; taking begin first would deadlock a resolving writer.
+            commitLock = _transactions is not null
+                ? await _transactions.AcquireCommitLockAsync(ct)
+                : null;
             checkpointBarrier = _transactions is not null
                 ? await _transactions.AcquireCheckpointBarrierAsync(ct)
                 : null;
@@ -2977,12 +3169,24 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             int frameCount = _walIndex.FrameCount;
             await _checkpoints.RunCheckpointAsync(
                 frameCount,
+                _wal.HasPendingCheckpoint,
                 async innerCt =>
                 {
                     if (_checkpoints.TryGetMinimumRetainedWalOffset(out _) ||
                         !_wal.HasPendingCheckpoint ||
                         !_wal.IsCheckpointCopyComplete)
                     {
+                        UpdateCheckpointRuntimePhaseAfterCopy();
+                        return;
+                    }
+
+                    // Legacy writers release the writer lock after append, before
+                    // durable publication. Their pending batches still own physical
+                    // offsets. With both admission barriers held, no new batch can
+                    // start; defer until existing batches finish publishing.
+                    if (_wal.HasPendingCommitWork)
+                    {
+                        _checkpoints.RequestDeferredCheckpoint();
                         UpdateCheckpointRuntimePhaseAfterCopy();
                         return;
                     }
@@ -3024,6 +3228,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         finally
         {
             checkpointBarrier?.Dispose();
+            commitLock?.Dispose();
         }
     }
 
@@ -3354,7 +3559,15 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     {
         _buffers.InvalidateCheckpointTransientReads(_options.PreserveOwnedPagesOnCheckpoint);
         RefreshPageReadProviderMapping();
-        if (_device.Length >= PageConstants.PageSize)
+        // New commits can advance the header while an older checkpoint is
+        // copied. Keep allocator state on the latest committed page 0.
+        if (_walIndex.TryGetLatest(0, out long walOffset))
+        {
+            var headerPage = GetWalHeaderPageBuffer();
+            await _wal.ReadPageIntoAsync(walOffset, headerPage, ct);
+            ReadFileHeaderFrom(headerPage);
+        }
+        else if (_device.Length >= PageConstants.PageSize)
             await ReadFileHeaderAsync(ct);
     }
 
@@ -3675,6 +3888,8 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             _checkpoints is null ||
             Volatile.Read(ref _disposeRequested) != 0 ||
             _options.AutoCheckpointExecutionMode != AutoCheckpointExecutionMode.Background ||
+            (_checkpoints.ActiveReaderCount > 0 &&
+                (!_wal.IsCheckpointCopyComplete || _checkpoints.TryGetMinimumRetainedWalOffset(out _))) ||
             GetCurrentTransaction() is not null ||
             _transactions?.InTransaction == true ||
             _wal.HasPendingCommitWork)
@@ -3684,6 +3899,25 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
         if (_checkpoints.TryStartBackgroundCheckpoint(RunBackgroundCheckpointStepWithInterceptorsAsync))
             Interlocked.Increment(ref _backgroundCheckpointStartCount);
+    }
+
+    private ValueTask WaitForBackgroundCheckpointForWriterAsync(CancellationToken ct)
+    {
+        ValueTask wait = WaitForBackgroundCheckpointAsync(ct);
+        return wait.IsCompletedSuccessfully ? wait : WaitForBackgroundCheckpointWriterCoreAsync(wait);
+    }
+
+    private async ValueTask WaitForBackgroundCheckpointWriterCoreAsync(ValueTask wait)
+    {
+        Interlocked.Increment(ref _backgroundCheckpointWriterWaitCount);
+        try
+        {
+            await wait;
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _backgroundCheckpointWriterWaitCount);
+        }
     }
 
     private ValueTask WaitForBackgroundCheckpointAsync(CancellationToken ct = default)
@@ -3729,20 +3963,22 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
         if (_transactions.HasLogicalConflict(tx.LogicalReadKeys, tx.StartVersion, out LogicalConflictKey conflictKey))
         {
-            throw CreateTerminalExplicitConflictException(
+            throw CreateTerminalExplicitConflictException(tx,
                 $"Transaction conflict detected while validating logical key {conflictKey}. The transaction must be retried.");
         }
 
         if (_transactions.HasLogicalRangeConflict(tx.LogicalReadRanges, tx.StartVersion, out conflictKey))
         {
-            throw CreateTerminalExplicitConflictException(
+            throw CreateTerminalExplicitConflictException(tx,
                 $"Transaction conflict detected while validating logical range containing {conflictKey}. The transaction must be retried.");
         }
     }
 
     private CSharpDbConflictException CreateTerminalExplicitConflictException(
+        PagerTransactionState tx,
         string message)
     {
+        tx.CommitRejectedBeforePublication = true;
         SaturatingIncrementRuntimeCounter(ref _terminalExplicitConflictCount);
         return new CSharpDbConflictException(message);
     }
@@ -4760,8 +4996,9 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         }
     }
 
-    private void RecordWalAppendDiagnostics(long startTicks)
+    private void RecordWalAppendDiagnostics(long startTicks, int dirtyPageCount)
     {
+        Volatile.Write(ref _lastAppendedCommitPageCount, dirtyPageCount);
         if (startTicks == 0)
             return;
 
@@ -4887,10 +5124,11 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         }
     }
 
-    private static IPageReadProvider CreatePageReadProvider(IStorageDevice device, PagerOptions? options)
+    private static IPageReadProvider CreatePageReadProvider(
+        IStorageDevice device, PagerOptions? options, bool copyMappedPages = true)
     {
         if (options?.UseMemoryMappedReads == true && device is FileStorageDevice fileDevice)
-            return new MemoryMappedPageReadProvider(fileDevice);
+            return new MemoryMappedPageReadProvider(fileDevice, copyOnRead: copyMappedPages);
 
         return new StorageDevicePageReadProvider(device);
     }
@@ -4977,12 +5215,12 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             $"WAL growth limit exceeded while snapshot readers are active (activeReaders={activeReaders}, projectedWalBytes={projectedBytes}, limitBytes={limitBytes.Value}).");
     }
 
-    private BTreeResourceDiagnosticsCounter GetOrAddBTreeResourceDiagnostics(string resourceName)
-        => _btreeResourceDiagnostics.GetOrAdd(resourceName, static name => new BTreeResourceDiagnosticsCounter(name));
+    private BTreeResourceDiagnosticsCounter? GetOrAddBTreeResourceDiagnostics(string resourceName)
+        => _btreeResourceDiagnostics?.GetOrAdd(resourceName, static name => new BTreeResourceDiagnosticsCounter(name));
 
     private CommitPathBTreeResourceDiagnosticsSnapshot[] GetBTreeResourceDiagnosticsSnapshot()
     {
-        if (_btreeResourceDiagnostics.IsEmpty)
+        if (_btreeResourceDiagnostics is null || _btreeResourceDiagnostics.IsEmpty)
             return [];
 
         CommitPathBTreeResourceDiagnosticsSnapshot[] snapshot =

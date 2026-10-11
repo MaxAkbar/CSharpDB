@@ -8,6 +8,7 @@ using CSharpDB.Storage.Diagnostics;
 using CSharpDB.Storage.Paging;
 using CSharpDB.Storage.StorageEngine;
 using CSharpDB.Storage.Wal;
+using CSharpDB.Storage.Transactions;
 using Microsoft.Win32.SafeHandles;
 using System.Reflection;
 
@@ -595,7 +596,7 @@ public class WalTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Checkpoint_WithReaderHoldingNoWalFrames_CanFinalizeImmediately()
+    public async Task Checkpoint_WithReaderHoldingNoWalFrames_DefersCopyAndPreservesSnapshotView()
     {
         var ct = TestContext.Current.CancellationToken;
 
@@ -614,21 +615,176 @@ public class WalTests : IAsyncLifetime
 
         _db = await Database.OpenAsync(_dbPath, options, ct);
         await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 'original')", ct);
         await _db.CheckpointAsync(ct);
 
         string walPath = _dbPath + ".wal";
 
-        using (_db.CreateReaderSession())
+        using (var reader = _db.CreateReaderSession())
         {
-            await _db.ExecuteAsync("INSERT INTO t VALUES (1, 'reader-holds-no-wal')", ct);
+            await _db.ExecuteAsync("UPDATE t SET val = 'changed' WHERE id = 1", ct);
+            await _db.ExecuteAsync("INSERT INTO t VALUES (2, 'new row')", ct);
             await _db.CheckpointAsync(ct);
 
-            Assert.Equal(PageConstants.WalHeaderSize, new FileInfo(walPath).Length);
+            Assert.True(new FileInfo(walPath).Length > PageConstants.WalHeaderSize);
+            await using var old = await reader.ExecuteReadAsync("SELECT id, val FROM t ORDER BY id", ct);
+            DbValue[] row = Assert.Single(await old.ToListAsync(ct));
+            Assert.Equal(1L, row[0].AsInteger);
+            Assert.Equal("original", row[1].AsText);
         }
 
+        await _db.CheckpointAsync(ct);
+        Assert.Equal(PageConstants.WalHeaderSize, new FileInfo(walPath).Length);
         await using var result = await _db.ExecuteAsync("SELECT COUNT(*) FROM t", ct);
         var rows = await result.ToListAsync(ct);
-        Assert.Equal(1L, rows[0][0].AsInteger);
+        Assert.Equal(2L, rows[0][0].AsInteger);
+    }
+
+    [Theory(Timeout = 30_000)]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task Checkpoint_CopiesOnlyWhenEveryReaderHasWalVersionsOfChangedPages(
+        bool fileBacked, bool snapshotCoversChangedPage)
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        await _db.DisposeAsync();
+        var options = new DatabaseOptions
+        {
+            StorageEngineOptions = new StorageEngineOptions
+            {
+                PagerOptions = new PagerOptions { CheckpointPolicy = new FrameCountCheckpointPolicy(10_000) },
+            },
+        };
+        _db = fileBacked
+            ? await Database.OpenAsync(_dbPath, options, ct)
+            : await Database.OpenInMemoryAsync(options, ct);
+        await _db.ExecuteAsync("CREATE TABLE a (id INTEGER PRIMARY KEY, val INTEGER)", ct);
+        await _db.ExecuteAsync("CREATE TABLE b (id INTEGER PRIMARY KEY, val INTEGER)", ct);
+        await _db.ExecuteAsync("INSERT INTO a VALUES (1, 10)", ct);
+        await _db.ExecuteAsync("INSERT INTO b VALUES (1, 20)", ct);
+        await _db.CheckpointAsync(ct);
+        await _db.ExecuteAsync("UPDATE a SET val = 11 WHERE id = 1", ct);
+        if (snapshotCoversChangedPage)
+            await _db.ExecuteAsync("UPDATE b SET val = 21 WHERE id = 1", ct);
+
+        using var reader = _db.CreateReaderSession();
+        var snapshot = (WalSnapshot)typeof(Database.ReaderSession)
+            .GetField("_snapshot", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(reader)!;
+        uint changedRoot = GetTableTree(_db, "b").RootPageId;
+        Assert.True(snapshot.HasWalFrames);
+        Assert.Equal(snapshotCoversChangedPage, snapshot.TryGet(changedRoot, out _));
+        await _db.ExecuteAsync("UPDATE b SET val = 22 WHERE id = 1", ct);
+        await _db.CheckpointAsync(ct);
+
+        var pager = (Pager)typeof(Database).GetField("_pager", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(_db)!;
+        var wal = (IWriteAheadLog)typeof(Pager).GetField("_wal", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(pager)!;
+        Assert.True(wal.HasPendingCheckpoint);
+        Assert.Equal(snapshotCoversChangedPage, wal.IsCheckpointCopyComplete);
+        // Delay the first access to b until after checkpointing: a shared cache cannot mask a replaced base page.
+        await using (var old = await reader.ExecuteReadAsync("SELECT val FROM b WHERE id = 1", ct))
+            Assert.Equal(snapshotCoversChangedPage ? 21L : 20L, Assert.Single(await old.ToListAsync(ct))[0].AsInteger);
+        await using (var unchanged = await reader.ExecuteReadAsync("SELECT val FROM a WHERE id = 1", ct))
+            Assert.Equal(11L, Assert.Single(await unchanged.ToListAsync(ct))[0].AsInteger);
+        await using (var latest = await _db.ExecuteAsync("SELECT val FROM b WHERE id = 1", ct))
+            Assert.Equal(22L, Assert.Single(await latest.ToListAsync(ct))[0].AsInteger);
+
+        reader.Dispose();
+        await _db.CheckpointAsync(ct);
+        Assert.False(wal.HasPendingCheckpoint);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task BackgroundCheckpoint_WithEmptySnapshot_DefersCopyAndCatchesUpAfterReaderDrains()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        await _db.DisposeAsync();
+        var options = new DatabaseOptions
+        {
+            StorageEngineOptions = new StorageEngineOptions
+            {
+                PagerOptions = new PagerOptions
+                {
+                    CheckpointPolicy = new FrameCountCheckpointPolicy(10_000),
+                    AutoCheckpointExecutionMode = AutoCheckpointExecutionMode.Background,
+                },
+            },
+        };
+        _db = await Database.OpenAsync(_dbPath, options, ct);
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 10)", ct);
+        await _db.CheckpointAsync(ct);
+        var pager = (Pager)typeof(Database).GetField("_pager", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(_db)!;
+        var wal = (IWriteAheadLog)typeof(Pager).GetField("_wal", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(pager)!;
+        pager.CheckpointPolicy = new FrameCountCheckpointPolicy(1);
+        pager.CheckpointThreshold = 1;
+        using (var reader = _db.CreateReaderSession())
+        {
+            for (int value = 11; value <= 14; value++)
+                await _db.ExecuteAsync($"UPDATE t SET val = {value} WHERE id = 1", ct);
+            // Automatic attempts do not prepare a blocked copy on every commit.
+            Assert.False(wal.HasPendingCheckpoint);
+            await using var result = await reader.ExecuteReadAsync("SELECT val FROM t WHERE id = 1", ct);
+            Assert.Equal(10L, Assert.Single(await result.ToListAsync(ct))[0].AsInteger);
+        }
+
+        await WaitForWalLengthAsync(_dbPath + ".wal", PageConstants.WalHeaderSize, TimeSpan.FromSeconds(5), ct);
+        await using var latest = await _db.ExecuteAsync("SELECT val FROM t WHERE id = 1", ct);
+        Assert.Equal(14L, Assert.Single(await latest.ToListAsync(ct))[0].AsInteger);
+    }
+
+    [Theory(Timeout = 15_000)]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task BackgroundCheckpoint_LastReaderDrainBeforeActionReturns_IsNotLostOrRetriedAfterFailure(
+        bool failFirstAction, bool stopBeforeReturn)
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        using var coordinator = new CheckpointCoordinator();
+        var index = new WalIndex();
+        WalSnapshot reader = coordinator.AcquireReaderSnapshot(index);
+        var firstStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstReturn = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        int passes = 0;
+        async ValueTask RunAsync(CancellationToken ignored)
+        {
+            if (Interlocked.Increment(ref passes) == 1)
+            {
+                firstStarted.TrySetResult();
+                await firstReturn.Task.WaitAsync(ct);
+                if (failFirstAction)
+                    throw new IOException("Injected checkpoint failure.");
+            }
+            else
+            {
+                coordinator.ClearDeferredCheckpointRequest();
+            }
+        }
+
+        coordinator.RequestDeferredCheckpoint();
+        Assert.True(coordinator.TryStartBackgroundCheckpoint(RunAsync));
+        try
+        {
+            await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(5), ct);
+            Assert.True(coordinator.ReleaseReaderSnapshot(reader));
+            Assert.False(coordinator.TryStartBackgroundCheckpoint(RunAsync));
+            Task? stopped = stopBeforeReturn ? coordinator.StopAndWaitForBackgroundCheckpointAsync().AsTask() : null;
+            firstReturn.TrySetResult();
+            if (failFirstAction)
+                await Assert.ThrowsAsync<IOException>(() => coordinator.WaitForBackgroundCheckpointAsync(ct).AsTask());
+            else if (stopped is not null)
+                await stopped.WaitAsync(TimeSpan.FromSeconds(5), ct);
+            else
+                await coordinator.WaitForBackgroundCheckpointAsync(ct);
+            Assert.Equal(failFirstAction || stopBeforeReturn ? 1 : 2, Volatile.Read(ref passes));
+        }
+        finally
+        {
+            firstReturn.TrySetResult();
+            coordinator.ReleaseReaderSnapshot(reader);
+        }
     }
 
     [Fact]
@@ -828,6 +984,187 @@ public class WalTests : IAsyncLifetime
         await using var result = await _db.ExecuteAsync("SELECT COUNT(*) FROM t", ct);
         var rows = await result.ToListAsync(ct);
         Assert.Equal(1L, rows[0][0].AsInteger);
+    }
+
+    [Theory]
+    [InlineData(false, false, 2)]
+    [InlineData(true, false, 2)]
+    [InlineData(false, false, 4)]
+    [InlineData(true, false, 4)]
+    [InlineData(false, true, 1)]
+    [InlineData(true, true, 1)]
+    public async Task BackgroundAutoCheckpoint_AdmitsWaitingWriterAfterCommitCopyBudget(
+        bool explicitWriter, bool bulkCommit, int maxPagesPerStep)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_wal_checkpoint_writer_admission_{Guid.NewGuid():N}.db");
+        var interceptor = new SliceCheckpointInterceptor();
+        var options = new PagerOptions
+        {
+            CheckpointPolicy = new FrameCountCheckpointPolicy(bulkCommit ? 1 : 10000),
+            AutoCheckpointExecutionMode = AutoCheckpointExecutionMode.Background,
+            AutoCheckpointMaxPagesPerStep = maxPagesPerStep,
+            Interceptors = [interceptor],
+        };
+        try
+        {
+            await using var pager = await OpenPagerAsync(dbPath, options, createNew: true, ct);
+            await pager.BeginTransactionAsync(ct);
+            uint root = await BTree.CreateNewAsync(pager, ct);
+            var tree = new BTree(pager, root);
+            for (int i = 1; i <= 100; i++)
+                await tree.InsertAsync(i, new byte[160], ct);
+            await pager.CommitAsync(ct);
+
+            if (!bulkCommit)
+            {
+                // One slice covers this small commit but leaves older pages.
+                pager.CheckpointPolicy = new FrameCountCheckpointPolicy(1);
+                pager.CheckpointThreshold = 1;
+                await pager.BeginTransactionAsync(ct);
+                await tree.InsertAsync(101, new byte[160], ct);
+                await pager.CommitAsync(ct);
+            }
+            await interceptor.FirstStarted.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+
+            Task<PagerWriteTransaction>? explicitBegin = explicitWriter
+                ? pager.BeginWriteTransactionAsync(ct).AsTask() : null;
+            Task writer = explicitBegin is not null ? explicitBegin : pager.BeginTransactionAsync(ct).AsTask();
+            try
+            {
+                Assert.False(writer.IsCompleted);
+                interceptor.FirstRelease.TrySetResult();
+                Task winner = await Task.WhenAny(writer, interceptor.SecondStarted.Task).WaitAsync(TimeSpan.FromSeconds(10), ct);
+                bool copyMustContinue = bulkCommit || maxPagesPerStep == 4;
+                Assert.Same(copyMustContinue ? interceptor.SecondStarted.Task : writer, winner);
+                if (copyMustContinue)
+                    Assert.False(writer.IsCompleted);
+            }
+            finally
+            {
+                interceptor.FirstRelease.TrySetResult();
+                interceptor.SecondRelease.TrySetResult();
+                await writer.WaitAsync(TimeSpan.FromSeconds(10), ct);
+                if (explicitBegin is not null)
+                    await (await explicitBegin).DisposeAsync();
+                else
+                    await pager.RollbackAsync(ct);
+            }
+        }
+        finally
+        {
+            interceptor.FirstRelease.TrySetResult();
+            interceptor.SecondRelease.TrySetResult();
+            if (File.Exists(dbPath)) File.Delete(dbPath);
+            if (File.Exists(dbPath + ".wal")) File.Delete(dbPath + ".wal");
+        }
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task BackgroundAutoCheckpoint_InterleavedGrowth_PreservesHeaderAndPolicy(
+        bool preserveOwnedPages, bool retainedBelowThreshold)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_wal_checkpoint_growth_{Guid.NewGuid():N}.db");
+        var interceptor = new SliceCheckpointInterceptor(blockThird: true, firstSlice: 2, thirdSlice: 8);
+        var options = new PagerOptions
+        {
+            CheckpointPolicy = new FrameCountCheckpointPolicy(10000),
+            AutoCheckpointExecutionMode = AutoCheckpointExecutionMode.Background,
+            AutoCheckpointMaxPagesPerStep = 1,
+            PreserveOwnedPagesOnCheckpoint = preserveOwnedPages,
+            Interceptors = [interceptor],
+        };
+        var expected = new Dictionary<uint, byte>();
+        try
+        {
+            await using (var pager = await OpenPagerAsync(dbPath, options, createNew: true, ct))
+            {
+                Task? followingWriter = null;
+                try
+                {
+                    await pager.BeginTransactionAsync(ct);
+                    for (int i = 1; i <= 6; i++)
+                    {
+                        uint pageId = await pager.AllocatePageAsync(ct);
+                        (await pager.GetPageAsync(pageId, ct))[0] = expected[pageId] = (byte)i;
+                        await pager.MarkDirtyAsync(pageId, ct);
+                    }
+                    await pager.CommitAsync(ct);
+                    pager.CheckpointPolicy = new FrameCountCheckpointPolicy(1);
+                    pager.CheckpointThreshold = 1;
+                    await pager.BeginTransactionAsync(ct);
+                    (await pager.GetPageAsync(1, ct))[0] = expected[1] = 99;
+                    await pager.MarkDirtyAsync(1, ct);
+                    await pager.CommitAsync(ct);
+                    await interceptor.FirstStarted.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+
+                    if (retainedBelowThreshold)
+                    {
+                        pager.CheckpointPolicy = new FrameCountCheckpointPolicy(1000);
+                        pager.CheckpointThreshold = 1000;
+                    }
+                    Task writer = pager.BeginTransactionAsync(ct).AsTask();
+                    interceptor.FirstRelease.TrySetResult();
+                    await writer.WaitAsync(TimeSpan.FromSeconds(10), ct);
+                    for (int i = 1; i <= 8; i++)
+                    {
+                        uint pageId = await pager.AllocatePageAsync(ct);
+                        (await pager.GetPageAsync(pageId, ct))[0] = expected[pageId] = (byte)(30 + i);
+                        await pager.MarkDirtyAsync(pageId, ct);
+                    }
+                    await pager.CommitAsync(ct);
+                    uint expectedPageCount = pager.PageCount;
+                    uint expectedChangeCounter = pager.ChangeCounter;
+                    await interceptor.SecondStarted.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+                    if (retainedBelowThreshold)
+                        followingWriter = pager.BeginTransactionAsync(ct).AsTask();
+                    interceptor.SecondRelease.TrySetResult();
+                    if (followingWriter is not null)
+                    {
+                        Task winner = await Task.WhenAny(followingWriter, interceptor.ThirdStarted.Task)
+                            .WaitAsync(TimeSpan.FromSeconds(10), ct);
+                        Assert.Same(followingWriter, winner);
+                    }
+                    else
+                    {
+                        await interceptor.ThirdStarted.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+                    }
+
+                    // The old copy is complete; newer page 0 is still in the WAL.
+                    Assert.Equal(expectedPageCount, pager.PageCount);
+                    Assert.Equal(expectedChangeCounter, pager.ChangeCounter);
+                }
+                finally
+                {
+                    interceptor.FirstRelease.TrySetResult();
+                    interceptor.SecondRelease.TrySetResult();
+                    interceptor.ThirdRelease.TrySetResult();
+                    if (followingWriter is not null)
+                    {
+                        await followingWriter.WaitAsync(TimeSpan.FromSeconds(10), ct);
+                        await pager.RollbackAsync(ct);
+                    }
+                }
+                await pager.CheckpointAsync(ct);
+            }
+            await using var reopened = await OpenPagerAsync(dbPath, new PagerOptions(), createNew: false, ct);
+            Assert.Equal((uint)expected.Count + 1, reopened.PageCount);
+            foreach (var page in expected)
+                Assert.Equal(page.Value, (await reopened.GetPageAsync(page.Key, ct))[0]);
+        }
+        finally
+        {
+            interceptor.FirstRelease.TrySetResult();
+            interceptor.SecondRelease.TrySetResult();
+            interceptor.ThirdRelease.TrySetResult();
+            if (File.Exists(dbPath)) File.Delete(dbPath);
+            if (File.Exists(dbPath + ".wal")) File.Delete(dbPath + ".wal");
+        }
     }
 
     [Fact]
@@ -2669,6 +3006,235 @@ public class WalTests : IAsyncLifetime
         }
     }
 
+    [Theory(Timeout = 30_000)]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task Checkpoint_PreservesCommitsPublishedAfterItsMapWasCaptured(bool fileBacked, bool corruptInitialMap)
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        string path = Path.Combine(Path.GetTempPath(), $"csharpdb_checkpoint_cutoff_{Guid.NewGuid():N}.db");
+        var index = new WalIndex();
+        await using var device = new MemoryStorageDevice();
+        IWriteAheadLog wal = fileBacked ? new WriteAheadLog(path, index) : new MemoryWriteAheadLog(index);
+        try
+        {
+            await wal.OpenAsync(3, ct);
+            await (await wal.AppendFramesAndCommitAsync(
+                new[] { new WalFrameWrite(0, CreateFilledPage(0x11)), new WalFrameWrite(1, CreateFilledPage(0x12)) }, 3, ct)).WaitAsync(ct);
+            index.AdvanceCommit(); // A counter-only advance must not extend the committed byte prefix.
+            if (corruptInitialMap)
+            {
+                index.OverwriteCommittedState(new Dictionary<uint, long>
+                {
+                    [0] = PageConstants.WalHeaderSize + PageConstants.WalFrameSize,
+                    [1] = PageConstants.WalHeaderSize + PageConstants.WalFrameSize,
+                }, frameCount: 2, commitCounter: index.CommitCounter);
+            }
+
+            int publications = 0;
+            async ValueTask PublishLaterCommitAsync()
+            {
+                if (wal is WriteAheadLog file) file.CheckpointPlanCapturedForTests = null;
+                if (wal is MemoryWriteAheadLog memory) memory.CheckpointPlanCapturedForTests = null;
+                publications++;
+                await (await wal.AppendFramesAndCommitAsync(
+                    new[] { new WalFrameWrite(1, CreateFilledPage(0x21)), new WalFrameWrite(2, CreateFilledPage(0x22)) }, 3, ct)).WaitAsync(ct);
+            }
+            if (wal is WriteAheadLog fileWal) fileWal.CheckpointPlanCapturedForTests = PublishLaterCommitAsync;
+            if (wal is MemoryWriteAheadLog memoryWal) memoryWal.CheckpointPlanCapturedForTests = PublishLaterCommitAsync;
+
+            if (corruptInitialMap)
+            {
+                // Repair of the old prefix must not overwrite a newer publication or truncate it.
+                await Assert.ThrowsAsync<CSharpDbException>(() => wal.CheckpointAsync(device, 3, ct, allowFinalize: false).AsTask());
+                Assert.Equal(4, index.FrameCount);
+                Assert.True(index.TryGetLatest(2, out long newest));
+                Assert.All(await wal.ReadPageAsync(newest, ct), value => Assert.Equal((byte)0x22, value));
+                await wal.CheckpointAsync(device, 3, ct);
+                await AssertPageFilledAsync(device, 0, 0x11, ct);
+                await AssertPageFilledAsync(device, 1, 0x21, ct);
+                await AssertPageFilledAsync(device, 2, 0x22, ct);
+            }
+            else
+            {
+                await wal.CheckpointAsync(device, 3, ct, allowFinalize: false);
+                Assert.True(wal.TryGetCheckpointRetainedWalStartOffset(out long retainedStart));
+                Assert.Equal(PageConstants.WalHeaderSize + 2L * PageConstants.WalFrameSize, retainedStart);
+                await AssertPageFilledAsync(device, 1, 0x12, ct);
+                await wal.CheckpointAsync(device, 3, ct);
+                Assert.Equal(2, index.FrameCount);
+                Assert.True(index.TryGetLatest(1, out long retainedFirst));
+                Assert.True(index.TryGetLatest(2, out long retainedLast));
+                Assert.All(await wal.ReadPageAsync(retainedFirst, ct), value => Assert.Equal((byte)0x21, value));
+                Assert.All(await wal.ReadPageAsync(retainedLast, ct), value => Assert.Equal((byte)0x22, value));
+                await wal.CheckpointAsync(device, 3, ct);
+                await AssertPageFilledAsync(device, 1, 0x21, ct);
+                await AssertPageFilledAsync(device, 2, 0x22, ct);
+            }
+            Assert.Equal(1, publications);
+        }
+        finally
+        {
+            await wal.CloseAndDeleteAsync();
+            await wal.DisposeAsync();
+            if (File.Exists(path)) File.Delete(path);
+            if (File.Exists(path + ".wal")) File.Delete(path + ".wal");
+        }
+    }
+
+    [Theory(Timeout = 30_000)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Checkpoint_RepairPreservesUnpublishedSuffixAndDiscardsOnlyItsCapturedPrefix(bool corruptLastCommit)
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        string path = Path.Combine(Path.GetTempPath(), $"csharpdb_checkpoint_repair_suffix_{Guid.NewGuid():N}.db");
+        try
+        {
+            var index = new WalIndex();
+            await using var device = new MemoryStorageDevice();
+            await using var wal = new WriteAheadLog(path, index);
+            await wal.OpenAsync(3, ct);
+            await (await wal.AppendFramesAndCommitAsync(
+                new[] { new WalFrameWrite(0, CreateFilledPage(0x11)), new WalFrameWrite(1, CreateFilledPage(0x12)) }, 3, ct)).WaitAsync(ct);
+            await (await wal.AppendFramesAndCommitAsync(
+                new[] { new WalFrameWrite(1, CreateFilledPage(0x22)) }, 3, ct)).WaitAsync(ct);
+            long publishedTail = PageConstants.WalHeaderSize + 3L * PageConstants.WalFrameSize;
+
+            if (corruptLastCommit)
+            {
+                using var handle = File.OpenHandle(path + ".wal", FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite);
+                long headerOffset = PageConstants.WalHeaderSize + 2L * PageConstants.WalFrameSize;
+                byte[] value = new byte[1];
+                Assert.Equal(1, RandomAccess.Read(handle, value, headerOffset));
+                value[0] ^= 0x80;
+                RandomAccess.Write(handle, value, headerOffset);
+                RandomAccess.FlushToDisk(handle);
+            }
+            else
+            {
+                // Public index corruption also inflates FrameCount. It must
+                // not extend the independently recorded published boundary.
+                index.AddCommittedFrame(0, publishedTail);
+            }
+
+            wal.CheckpointPlanCapturedForTests = async () =>
+            {
+                wal.CheckpointPlanCapturedForTests = null;
+                wal.BeginTransaction();
+                // The batch API writes frames immediately without publishing
+                // them; the single-frame API may only stage them in memory.
+                await wal.AppendFramesAsync(new[] { new WalFrameWrite(2, CreateFilledPage(0x33)) }, ct);
+            };
+            await wal.CheckpointAsync(device, 3, ct, allowFinalize: false);
+            Assert.True(wal.IsCheckpointCopyComplete);
+            Assert.True(wal.TryGetCheckpointRetainedWalStartOffset(out long retainedStart));
+            Assert.Equal(publishedTail, retainedStart);
+            Assert.Equal(corruptLastCommit ? 2 : 3, index.FrameCount);
+            Assert.False(index.TryGetLatest(2, out _));
+            Assert.True(new FileInfo(path + ".wal").Length >= publishedTail + PageConstants.WalFrameSize);
+            await AssertPageFilledAsync(device, 0, 0x11, ct);
+            await AssertPageFilledAsync(device, 1, corruptLastCommit ? (byte)0x12 : (byte)0x22, ct);
+
+            // Finalization remains after publication. The formerly pending
+            // suffix must survive compaction and the following checkpoint.
+            await (await wal.CommitAsync(3, ct)).WaitAsync(ct);
+            await wal.CheckpointAsync(device, 3, ct);
+            Assert.Equal(1, index.FrameCount);
+            Assert.True(index.TryGetLatest(2, out long survivingOffset));
+            Assert.All(await wal.ReadPageAsync(survivingOffset, ct), value => Assert.Equal((byte)0x33, value));
+            await wal.CheckpointAsync(device, 3, ct);
+            await AssertPageFilledAsync(device, 2, 0x33, ct);
+            Assert.Equal(0, index.FrameCount);
+        }
+        finally
+        {
+            if (File.Exists(path + ".wal")) File.Delete(path + ".wal");
+            if (File.Exists(path)) File.Delete(path);
+        }
+    }
+
+    [Theory(Timeout = 30_000)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Checkpoint_RepairWithNoSurvivingCommit_FinalizesAfterWalReaderDrains(bool throughPager)
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        string path = Path.Combine(Path.GetTempPath(), $"csharpdb_checkpoint_empty_repair_{Guid.NewGuid():N}.db");
+        try
+        {
+            await using var device = new FileStorageDevice(path, createNew: true);
+            var index = new WalIndex();
+            await using var wal = new WriteAheadLog(path, index);
+            await using var pager = await Pager.CreateAsync(device, wal, index,
+                new PagerOptions { CheckpointPolicy = new FrameCountCheckpointPolicy(10_000) }, ct);
+            await pager.InitializeNewDatabaseAsync(ct);
+            await pager.RecoverAsync(ct);
+            byte[] originalHeader = (await pager.GetPageAsync(0, ct)).ToArray();
+            WalSnapshot emptyReader = pager.AcquireReaderSnapshot();
+            WalSnapshot? walReader = null;
+            try
+            {
+                Assert.False(emptyReader.HasWalFrames);
+                await (await wal.AppendFramesAndCommitAsync(
+                    new[] { new WalFrameWrite(0, originalHeader) }, pager.PageCount, ct)).WaitAsync(ct);
+                walReader = pager.AcquireReaderSnapshot();
+                Assert.True(walReader.HasWalFrames);
+                using (var handle = File.OpenHandle(path + ".wal", FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite))
+                {
+                    byte[] value = new byte[1];
+                    Assert.Equal(1, RandomAccess.Read(handle, value, PageConstants.WalHeaderSize));
+                    value[0] ^= 0x80;
+                    RandomAccess.Write(handle, value, PageConstants.WalHeaderSize);
+                    RandomAccess.FlushToDisk(handle);
+                }
+
+                if (throughPager)
+                    await pager.CheckpointAsync(ct);
+                else
+                    await wal.CheckpointAsync(device, pager.PageCount, ct, allowFinalize: false);
+
+                Assert.Equal(0, index.FrameCount);
+                Assert.True(wal.HasPendingCheckpoint);
+                Assert.True(wal.IsCheckpointCopyComplete);
+                Assert.True(wal.TryGetCheckpointRetainedWalStartOffset(out long discardedEnd));
+                Assert.Equal(PageConstants.WalHeaderSize + PageConstants.WalFrameSize, discardedEnd);
+                Assert.True(new FileInfo(path + ".wal").Length > PageConstants.WalHeaderSize);
+
+                pager.ReleaseReaderSnapshot(walReader);
+                walReader = null;
+                if (throughPager)
+                    await pager.CheckpointAsync(ct);
+                else
+                    await wal.CheckpointAsync(device, pager.PageCount, ct);
+
+                Assert.False(wal.HasPendingCheckpoint);
+                Assert.Equal(PageConstants.WalHeaderSize, new FileInfo(path + ".wal").Length);
+                // A reader with an empty WAL map can remain: no base page was
+                // copied and its original header must still be visible.
+                using var old = pager.CreateSnapshotReader(emptyReader);
+                Assert.Equal(originalHeader, await old.GetPageAsync(0, ct));
+                byte[] storedHeader = new byte[PageConstants.PageSize];
+                Assert.Equal(PageConstants.PageSize, await device.ReadAsync(0, storedHeader, ct));
+                Assert.Equal(originalHeader, storedHeader);
+                await pager.CheckpointAsync(ct);
+                Assert.False(wal.HasPendingCheckpoint);
+            }
+            finally
+            {
+                if (walReader is not null)
+                    pager.ReleaseReaderSnapshot(walReader);
+                pager.ReleaseReaderSnapshot(emptyReader);
+            }
+        }
+        finally
+        {
+            if (File.Exists(path + ".wal")) File.Delete(path + ".wal");
+            if (File.Exists(path)) File.Delete(path);
+        }
+    }
+
     [Fact]
     public async Task FileWriteAheadLog_Checkpoint_RepairsStaleIndexOffsetsFromWalFile()
     {
@@ -3041,7 +3607,7 @@ public class WalTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task RuntimeSnapshot_ReaderWithNoWalFramesDoesNotReportAwaitingReaders()
+    public async Task RuntimeSnapshot_ReaderWithNoWalFramesRetainsUncopiedWalUntilItDrains()
     {
         var ct = TestContext.Current.CancellationToken;
         var runtime = await OpenMemoryRuntimePagerAsync(
@@ -3052,6 +3618,7 @@ public class WalTests : IAsyncLifetime
             },
             ct);
         await using Pager pager = runtime.Pager;
+        byte[] originalHeader = (await pager.GetPageAsync(0, ct)).ToArray();
 
         WalSnapshot reader = pager.AcquireReaderSnapshot();
         try
@@ -3061,15 +3628,19 @@ public class WalTests : IAsyncLifetime
             await pager.CheckpointAsync(ct);
 
             PagerRuntimeRawSnapshot snapshot = GetPagerRuntimeSnapshot(pager);
-            Assert.Equal(StorageCheckpointPhaseRaw.Idle, snapshot.Wal.CheckpointPhase);
+            Assert.NotEqual(StorageCheckpointPhaseRaw.Idle, snapshot.Wal.CheckpointPhase);
             Assert.Equal(1, snapshot.Storage.ActiveReaderCount);
-            Assert.Equal(0, snapshot.Wal.FrameCount);
-            Assert.Equal(0, snapshot.Wal.RetainedBytes);
+            Assert.True(snapshot.Wal.FrameCount > 0);
+            Assert.False(runtime.Wal.IsCheckpointCopyComplete);
+            using var old = pager.CreateSnapshotReader(reader);
+            Assert.Equal(originalHeader, await old.GetPageAsync(0, ct));
         }
         finally
         {
             pager.ReleaseReaderSnapshot(reader);
         }
+        await pager.CheckpointAsync(ct);
+        Assert.Equal(StorageCheckpointPhaseRaw.Idle, GetPagerRuntimeSnapshot(pager).Wal.CheckpointPhase);
     }
 
     [Fact]
@@ -3884,6 +4455,35 @@ public class WalTests : IAsyncLifetime
 
         await pager.RecoverAsync(ct);
         return pager;
+    }
+
+    private sealed class SliceCheckpointInterceptor(
+        bool blockThird = false, int firstSlice = 1, int thirdSlice = 3) : IPageOperationInterceptor
+    {
+        private int _slice;
+        public TaskCompletionSource FirstStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource FirstRelease { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource SecondStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource SecondRelease { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ThirdStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ThirdRelease { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public ValueTask OnCheckpointStartAsync(int committedFrameCount, CancellationToken ct = default)
+        {
+            int slice = Interlocked.Increment(ref _slice);
+            if (slice == firstSlice) { FirstStarted.TrySetResult(); return new ValueTask(FirstRelease.Task.WaitAsync(ct)); }
+            if (slice == firstSlice + 1) { SecondStarted.TrySetResult(); return new ValueTask(SecondRelease.Task.WaitAsync(ct)); }
+            if (slice == thirdSlice && blockThird) { ThirdStarted.TrySetResult(); return new ValueTask(ThirdRelease.Task.WaitAsync(ct)); }
+            return ValueTask.CompletedTask;
+        }
+        public ValueTask OnBeforeReadAsync(uint pageId, CancellationToken ct = default) => ValueTask.CompletedTask;
+        public ValueTask OnAfterReadAsync(uint pageId, PageReadSource source, CancellationToken ct = default) => ValueTask.CompletedTask;
+        public ValueTask OnBeforeWriteAsync(uint pageId, CancellationToken ct = default) => ValueTask.CompletedTask;
+        public ValueTask OnAfterWriteAsync(uint pageId, bool succeeded, CancellationToken ct = default) => ValueTask.CompletedTask;
+        public ValueTask OnCommitStartAsync(int dirtyPageCount, CancellationToken ct = default) => ValueTask.CompletedTask;
+        public ValueTask OnCommitEndAsync(int dirtyPageCount, bool succeeded, CancellationToken ct = default) => ValueTask.CompletedTask;
+        public ValueTask OnCheckpointEndAsync(int committedFrameCount, bool succeeded, CancellationToken ct = default) => ValueTask.CompletedTask;
+        public ValueTask OnRecoveryStartAsync(CancellationToken ct = default) => ValueTask.CompletedTask;
+        public ValueTask OnRecoveryEndAsync(bool succeeded, CancellationToken ct = default) => ValueTask.CompletedTask;
     }
 
     private sealed class BlockingCheckpointInterceptor : IPageOperationInterceptor

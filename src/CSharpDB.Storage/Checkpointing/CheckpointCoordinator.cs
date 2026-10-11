@@ -17,6 +17,7 @@ internal sealed class CheckpointCoordinator : IDisposable
     private long _minimumRetainedWalOffset = long.MaxValue;
     private Task? _backgroundCheckpointTask;
     private bool _backgroundCheckpointStartsStopped;
+    private bool _backgroundCheckpointRestartRequested;
 
     public int ActiveReaderCount => Volatile.Read(ref _activeReaderCount);
     public bool HasPendingCheckpointRequest => Volatile.Read(ref _deferredCheckpointRequested) != 0;
@@ -156,10 +157,9 @@ internal sealed class CheckpointCoordinator : IDisposable
         int legacyThreshold,
         long estimatedWalBytes)
     {
-        bool readersRequireWalRetention = TryGetMinimumRetainedWalOffset(out _);
         var context = new PagerCheckpointContext(
             committedFrameCount,
-            readersRequireWalRetention ? ActiveReaderCount : 0,
+            ActiveReaderCount,
             estimatedWalBytes);
 
         bool shouldCheckpoint = policy is FrameCountCheckpointPolicy
@@ -236,12 +236,35 @@ internal sealed class CheckpointCoordinator : IDisposable
         return walOffset != long.MaxValue;
     }
 
-    public async ValueTask RunCheckpointAsync(
+    // Called only under RunCheckpointAsync's admission lock, using the WAL's
+    // frozen remaining targets. A map miss reads the base file, so copying that
+    // page would replace a version still visible to this snapshot.
+    internal bool CanCopyCheckpointPages(ReadOnlySpan<KeyValuePair<uint, long>> pages)
+    {
+        foreach (WalSnapshot snapshot in _activeSnapshots.Keys)
+        {
+            foreach (var page in pages)
+            {
+                if (!snapshot.TryGet(page.Key, out _))
+                    return false;
+            }
+        }
+        return true;
+    }
+
+    public ValueTask RunCheckpointAsync(
         int committedFrameCount,
         Func<CancellationToken, ValueTask> checkpointAction,
         CancellationToken ct = default)
+        => RunCheckpointAsync(committedFrameCount, hasPendingCheckpoint: false, checkpointAction, ct);
+
+    internal async ValueTask RunCheckpointAsync(
+        int committedFrameCount,
+        bool hasPendingCheckpoint,
+        Func<CancellationToken, ValueTask> checkpointAction,
+        CancellationToken ct = default)
     {
-        if (committedFrameCount == 0)
+        if (committedFrameCount == 0 && !hasPendingCheckpoint)
             return;
 
         await _checkpointLock.WaitAsync(ct);
@@ -263,15 +286,68 @@ internal sealed class CheckpointCoordinator : IDisposable
         lock (_backgroundCheckpointGate)
         {
             if (_backgroundCheckpointStartsStopped ||
-                !HasPendingCheckpointRequest ||
-                _backgroundCheckpointTask is { IsCompleted: false })
+                !HasPendingCheckpointRequest)
             {
                 return false;
             }
 
-            _backgroundCheckpointTask = Task.Run(
-                async () => await checkpointAction(CancellationToken.None));
+            if (_backgroundCheckpointTask is { IsCompleted: false })
+            {
+                // The last reader may drain after a blocked copy releases its
+                // admission lock but before its background action returns.
+                if (ActiveReaderCount == 0)
+                    _backgroundCheckpointRestartRequested = true;
+                return false;
+            }
+
+            var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _backgroundCheckpointRestartRequested = false;
+            _backgroundCheckpointTask = completion.Task;
+            _ = Task.Run(() => RunBackgroundCheckpointAsync(checkpointAction, completion));
             return true;
+        }
+    }
+
+    private async Task RunBackgroundCheckpointAsync(
+        Func<CancellationToken, ValueTask> checkpointAction,
+        TaskCompletionSource completion)
+    {
+        try
+        {
+            while (true)
+            {
+                await checkpointAction(CancellationToken.None).ConfigureAwait(false);
+                lock (_backgroundCheckpointGate)
+                {
+                    bool restart = _backgroundCheckpointRestartRequested &&
+                        !_backgroundCheckpointStartsStopped &&
+                        HasPendingCheckpointRequest && ActiveReaderCount == 0;
+                    _backgroundCheckpointRestartRequested = false;
+                    if (restart)
+                        continue;
+
+                    // Complete under the scheduling lock: a late wake either
+                    // queued a retry above or sees a completed lifecycle.
+                    completion.TrySetResult();
+                    return;
+                }
+            }
+        }
+        catch (OperationCanceledException ex)
+        {
+            lock (_backgroundCheckpointGate)
+            {
+                _backgroundCheckpointRestartRequested = false;
+                completion.TrySetCanceled(ex.CancellationToken);
+            }
+        }
+        catch (Exception ex)
+        {
+            lock (_backgroundCheckpointGate)
+            {
+                _backgroundCheckpointRestartRequested = false;
+                completion.TrySetException(ex);
+            }
         }
     }
 
@@ -348,6 +424,7 @@ internal sealed class CheckpointCoordinator : IDisposable
         lock (_backgroundCheckpointGate)
         {
             _backgroundCheckpointStartsStopped = true;
+            _backgroundCheckpointRestartRequested = false;
             backgroundCheckpointTask = _backgroundCheckpointTask;
         }
 

@@ -1,4 +1,5 @@
 using System.Globalization;
+using CSharpDB.Execution;
 using CSharpDB.Primitives;
 using CSharpDB.Sql;
 using SqlBitString = CSharpDB.Client.Models.SqlBitString;
@@ -13,6 +14,7 @@ internal sealed class PreparedStatementTemplate
     private readonly bool _containsParameters;
     private readonly PreparedSimpleInsertTemplate? _simpleInsertTemplate;
     private readonly BoundStatementCache? _boundStatementCache;
+    private readonly PreparedSelectTemplate? _preparedSelectTemplate;
 
     private PreparedStatementTemplate(
         Statement template,
@@ -23,6 +25,8 @@ internal sealed class PreparedStatementTemplate
         _parameterNames = parameterNames;
         _containsParameters = parameterNames.Length > 0;
         _simpleInsertTemplate = simpleInsertTemplate;
+        _preparedSelectTemplate = parameterNames.Length <= 16
+            ? PreparedSelectTemplate.TryCreate(template, parameterNames) : null;
         _boundStatementCache = _containsParameters && simpleInsertTemplate == null
             ? new BoundStatementCache(DefaultBoundStatementCacheCapacity)
             : null;
@@ -54,11 +58,33 @@ internal sealed class PreparedStatementTemplate
         if (!_containsParameters)
             return _template;
 
+        if (_preparedSelectTemplate is { } select)
+        {
+            Span<long> values = stackalloc long[_parameterNames.Length];
+            if (TryBindIntegerValues(parameters, values))
+                return select.Bind(values);
+        }
+
         var cache = _boundStatementCache;
         if (cache != null)
-            return cache.GetOrAdd(_parameterNames, parameters, () => BindStatement(_template, parameters));
+            return cache.GetOrAdd(_parameterNames, parameters, _template);
 
         return BindStatement(_template, parameters);
+    }
+
+    private bool TryBindIntegerValues(CSharpDbParameterCollection parameters, Span<long> values)
+    {
+        for (int i = 0; i < _parameterNames.Length; i++)
+        {
+            string name = _parameterNames[i];
+            if (!parameters.TryGetParameter(name.AsSpan(), out var parameter))
+                throw new InvalidOperationException($"Parameter '@{name}' was not supplied.");
+            if (parameter.DbType == System.Data.DbType.Boolean ||
+                parameter.Value is not (long or int or short or byte or sbyte or uint or ushort or ulong))
+                return false;
+            values[i] = ToDbValue(parameter.Value).AsInteger;
+        }
+        return true;
     }
 
     private static bool TryCreateSimpleInsertTemplate(
@@ -1278,10 +1304,10 @@ internal sealed class PreparedStatementTemplate
         internal Statement GetOrAdd(
             string[] parameterNames,
             CSharpDbParameterCollection parameters,
-            Func<Statement> factory)
+            Statement template)
         {
             if (_capacity == 0)
-                return factory();
+                return BindStatement(template, parameters);
 
             lock (_gate)
             {
@@ -1301,7 +1327,7 @@ internal sealed class PreparedStatementTemplate
                 }
             }
 
-            var created = factory();
+            var created = BindStatement(template, parameters);
             var capturedValues = CaptureValues(parameterNames, parameters);
 
             lock (_gate)

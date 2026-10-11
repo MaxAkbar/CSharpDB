@@ -348,17 +348,17 @@ function Assert-ReviewedWorkerPackageClosure {
     )
 
     $expectedPackages = @(
-        'Microsoft.Bcl.Cryptography/9.0.13'
-        'Microsoft.Data.SqlClient.Extensions.Abstractions/7.0.3'
-        'Microsoft.Data.SqlClient.Internal.Logging/7.0.3'
-        'Microsoft.Data.SqlClient.SNI.runtime/6.0.3'
-        'Microsoft.Data.SqlClient/7.0.3'
-        'Microsoft.Extensions.Caching.Abstractions/9.0.13'
-        'Microsoft.Extensions.Caching.Memory/9.0.13'
+        'Microsoft.Bcl.Cryptography/9.0.18'
+        'Microsoft.Data.SqlClient.Extensions.Abstractions/7.1.1'
+        'Microsoft.Data.SqlClient.Internal.Logging/7.1.1'
+        'Microsoft.Data.SqlClient.SNI.runtime/7.1.0'
+        'Microsoft.Data.SqlClient/7.1.1'
+        'Microsoft.Extensions.Caching.Abstractions/9.0.18'
+        'Microsoft.Extensions.Caching.Memory/9.0.18'
         'Microsoft.Extensions.DependencyInjection.Abstractions/10.0.0'
         'Microsoft.Extensions.Logging.Abstractions/10.0.0'
-        'Microsoft.Extensions.Options/9.0.13'
-        'Microsoft.Extensions.Primitives/9.0.13'
+        'Microsoft.Extensions.Options/9.0.18'
+        'Microsoft.Extensions.Primitives/9.0.18'
         'Microsoft.IdentityModel.Abstractions/8.16.0'
         'Microsoft.IdentityModel.JsonWebTokens/8.16.0'
         'Microsoft.IdentityModel.Logging/8.16.0'
@@ -366,12 +366,13 @@ function Assert-ReviewedWorkerPackageClosure {
         'Microsoft.IdentityModel.Protocols/8.16.0'
         'Microsoft.IdentityModel.Tokens/8.16.0'
         'Microsoft.SqlServer.Server/1.0.0'
-        'Microsoft.SqlServer.TransactSql.ScriptDom/180.107.0'
-        'System.Configuration.ConfigurationManager/9.0.13'
-        'System.Diagnostics.EventLog/9.0.13'
+        'Microsoft.SqlServer.TransactSql.ScriptDom/180.117.0'
+        'System.Configuration.ConfigurationManager/9.0.18'
+        'System.Diagnostics.EventLog/9.0.18'
         'System.IdentityModel.Tokens.Jwt/8.16.0'
-        'System.Security.Cryptography.Pkcs/9.0.13'
-        'System.Security.Cryptography.ProtectedData/9.0.13'
+        'System.Security.Cryptography.Pkcs/9.0.18'
+        'System.Security.Cryptography.ProtectedData/9.0.18'
+        'System.Threading.RateLimiting/9.0.18'
     ) | Sort-Object
 
     $dependencies = [System.IO.File]::ReadAllText($DependencyPath) |
@@ -460,7 +461,7 @@ try {
         (Join-Path $workerOutput 'Microsoft.Data.SqlClient.dll'),
         (Join-Path $workerOutput 'Microsoft.SqlServer.TransactSql.ScriptDom.dll'),
         (Join-Path $workerOutput 'THIRD-PARTY-NOTICES.md'),
-        (Join-Path $workerOutput 'licenses/Microsoft.Data.SqlClient.SNI.runtime-6.0.3-LICENSE.txt'),
+        (Join-Path $workerOutput 'licenses/Microsoft.Data.SqlClient.SNI.runtime-7.1.0-LICENSE.txt'),
         (Join-Path $workerOutput 'csharpdb-migration-sqlserver-worker.deps.json')
     )
     foreach ($requiredFile in $requiredWorkerFiles) {
@@ -471,7 +472,7 @@ try {
 
     $sniLicense = Join-Path `
         $workerOutput `
-        'licenses/Microsoft.Data.SqlClient.SNI.runtime-6.0.3-LICENSE.txt'
+        'licenses/Microsoft.Data.SqlClient.SNI.runtime-7.1.0-LICENSE.txt'
     $expectedSniLicenseHash =
         '9335E8BAD875DD7BE4EEBD55D2335EB6433D1CEA61AADB3817AF7807BEF8932A'
     $actualSniLicenseHash = (Get-FileHash `
@@ -481,7 +482,7 @@ try {
             $expectedSniLicenseHash,
             [StringComparison]::OrdinalIgnoreCase))
     {
-        throw 'The published SNI runtime license does not match the reviewed 6.0.3 terms.'
+        throw 'The published SNI runtime license does not match the reviewed 7.1.0 terms.'
     }
 
     Assert-ReviewedWorkerPackageClosure `

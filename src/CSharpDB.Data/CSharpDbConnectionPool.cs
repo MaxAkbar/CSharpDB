@@ -2147,9 +2147,7 @@ internal sealed class CSharpDbConnectionPool :
 
             Database.ReaderSession readerSession = _transactionSnapshotRowCounts is null
                 ? database.CreateReaderSession()
-                : database.CreateReaderSession(
-                    _transactionSnapshotRowCounts,
-                    allowCurrentCatalogRowCounts: false);
+                : database.CreateReaderSession(_transactionSnapshotRowCounts);
             TrackReaderSession(sessionId, readerSession);
             try
             {

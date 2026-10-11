@@ -7,6 +7,7 @@
   },
   "checks": [
     {
+      "minimumEnforceableComparisons": 1,
       "csv": "CSharpDB.Benchmarks.Micro.PointLookupGuardrailBenchmarks-report.csv",
       "baselineSnapshot": "focused-validation/20260330-122507",
       "keyColumns": [
@@ -24,6 +25,7 @@
       ]
     },
     {
+      "minimumEnforceableComparisons": 1,
       "csv": "CSharpDB.Benchmarks.Micro.JoinGuardrailBenchmarks-report.csv",
       "baselineSnapshot": "focused-validation/20260330-122507",
       "keyColumns": [
@@ -31,6 +33,7 @@
       ]
     },
     {
+      "minimumEnforceableComparisons": 1,
       "csv": "CSharpDB.Benchmarks.Micro.InsertGuardrailBenchmarks-report.csv",
       "baselineSnapshot": "focused-validation/20260330-122507",
       "keyColumns": [
@@ -52,6 +55,7 @@
       ]
     },
     {
+      "minimumEnforceableComparisons": 1,
       "csv": "CSharpDB.Benchmarks.Micro.CollectionIndexGuardrailBenchmarks-report.csv",
       "baselineSnapshot": "focused-validation/20260330-122507",
       "keyColumns": [
@@ -62,6 +66,7 @@
       "maxAllocRegressionBytes": 2048.0
     },
     {
+      "minimumEnforceableComparisons": 1,
       "csv": "CSharpDB.Benchmarks.Micro.CompositeIndexGuardrailBenchmarks-report.csv",
       "baselineSnapshot": "focused-validation/20260330-122507",
       "keyColumns": [
@@ -73,6 +78,7 @@
       "maxAllocRegressionBytes": 262144.0
     },
     {
+      "minimumEnforceableComparisons": 1,
       "csv": "CSharpDB.Benchmarks.Micro.IndexAggregateGuardrailBenchmarks-report.csv",
       "baselineSnapshot": "focused-validation/20260330-122507",
       "keyColumns": [
@@ -82,6 +88,7 @@
       "maxMeanRegressionPercent": 25.0
     },
     {
+      "minimumEnforceableComparisons": 1,
       "csv": "CSharpDB.Benchmarks.Micro.QueryPlanCacheGuardrailBenchmarks-report.csv",
       "baselineSnapshot": "focused-validation/20260330-122507",
       "keyColumns": [
@@ -92,6 +99,7 @@
       "maxAllocRegressionBytes": 131072.0
     },
     {
+      "minimumEnforceableComparisons": 1,
       "csv": "CSharpDB.Benchmarks.Micro.WalGuardrailBenchmarks-report.csv",
       "baselineSnapshot": "focused-validation/20260330-122507",
       "keyColumns": [
@@ -113,6 +121,7 @@
       ]
     },
     {
+      "minimumEnforceableComparisons": 1,
       "csv": "CSharpDB.Benchmarks.Micro.ScanProjectionGuardrailBenchmarks-report.csv",
       "baselineSnapshot": "focused-validation/20260330-122507",
       "keyColumns": [

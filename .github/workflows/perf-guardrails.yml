@@ -5,72 +5,120 @@ on:
     paths:
       - "src/**"
       - "tests/CSharpDB.Benchmarks/**"
+      - "tests/CSharpDB.Benchmarks.Tests/**"
+      - "global.json"
+      - "**/*.props"
+      - "**/*.targets"
+      - "**/*.csproj"
+      - "**/packages.lock.json"
+      - "**/packages.config"
+      - "**/[Nn]u[Gg]et.[Cc]onfig"
+      - ".config/dotnet-tools.json"
       - ".github/workflows/perf-guardrails.yml"
   workflow_dispatch:
     inputs:
       fail_on_regression:
-        description: "Fail run when guardrails are violated"
+        description: "Fail timing regressions (evidence integrity always enforced)"
         required: false
         default: false
         type: boolean
-      baseline_snapshot:
-        description: "Optional baseline snapshot folder name (for example 20260302-001757)"
+      base_ref:
+        description: "Product base ref (default: head parent; PRs use the PR base SHA)"
         required: false
         default: ""
         type: string
   schedule:
     - cron: "0 10 * * *"
 
+permissions:
+  contents: read
+
 jobs:
   perf-guardrails:
     runs-on: windows-latest
-    timeout-minutes: 240
-
+    timeout-minutes: 360
     steps:
-      - name: Checkout
+      - name: Checkout harness
         uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 2
 
-      - name: Setup .NET
+      - name: Resolve product revisions
+        id: revisions
+        shell: pwsh
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          REQUESTED_BASE_REF: ${{ inputs.base_ref }}
+        run: |
+          $head = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'Could not resolve head.' }
+          if ($env:PR_BASE_SHA) { $base = $env:PR_BASE_SHA }
+          elseif ($env:REQUESTED_BASE_REF) {
+            git fetch --no-tags origin $env:REQUESTED_BASE_REF
+            if ($LASTEXITCODE -ne 0) { throw 'Could not fetch requested base.' }
+            $base = (git rev-parse FETCH_HEAD).Trim()
+          }
+          else { $base = (git rev-parse HEAD^).Trim() }
+          if ($LASTEXITCODE -ne 0 -or $base -notmatch '^[a-f0-9]{40}$') { throw 'Could not resolve base.' }
+          "base=$base" >> $env:GITHUB_OUTPUT
+          "head=$head" >> $env:GITHUB_OUTPUT
+
+      - name: Checkout base product
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.revisions.outputs.base }}
+          path: .tmp/perf-guardrails/base
+
+      - name: Checkout head product
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.revisions.outputs.head }}
+          path: .tmp/perf-guardrails/head
+
+      - name: Setup head .NET SDK
         uses: actions/setup-dotnet@v6
         with:
           global-json-file: global.json
 
-      - name: Run Perf Guardrails PR Lane (Report)
-        if: github.event_name == 'pull_request'
-        shell: pwsh
-        run: |
-          pwsh ./tests/CSharpDB.Benchmarks/scripts/Run-Perf-Guardrails.ps1 `
-            -Configuration Release `
-            -Mode pr `
-            -NoFailOnRegression `
-            -BaselineSnapshot "${{ inputs.baseline_snapshot }}"
+      - name: Setup base .NET SDK
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: .tmp/perf-guardrails/base/global.json
 
-      - name: Run Perf Guardrails Release Lane (Report)
-        if: github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.fail_on_regression != true)
+      - name: Test guardrail integrity contract
         shell: pwsh
-        run: |
-          pwsh ./tests/CSharpDB.Benchmarks/scripts/Run-Perf-Guardrails.ps1 `
-            -Configuration Release `
-            -Mode release `
-            -NoFailOnRegression `
-            -BaselineSnapshot "${{ inputs.baseline_snapshot }}"
+        run: ./tests/CSharpDB.Benchmarks/scripts/Test-PerfGuardrails.ps1
 
-      - name: Run Perf Guardrails Release Lane (Gate)
-        if: github.event_name == 'workflow_dispatch' && inputs.fail_on_regression == true
+      - name: Run balanced base and head guardrails
         shell: pwsh
+        env:
+          PERF_EVENT: ${{ github.event_name }}
+          FAIL_ON_REGRESSION: ${{ inputs.fail_on_regression }}
         run: |
-          pwsh ./tests/CSharpDB.Benchmarks/scripts/Run-Perf-Guardrails.ps1 `
-            -Configuration Release `
-            -Mode release `
-            -BaselineSnapshot "${{ inputs.baseline_snapshot }}"
+          $mode = if ($env:PERF_EVENT -eq 'pull_request') { 'pr' } else { 'release' }
+          $reportOnly = $env:FAIL_ON_REGRESSION -ne 'true'
+          ./tests/CSharpDB.Benchmarks/scripts/Run-PairedPerfGuardrails.ps1 `
+            -BaseRoot .tmp/perf-guardrails/base `
+            -HeadRoot .tmp/perf-guardrails/head `
+            -OutputPath .tmp/perf-guardrails/evidence `
+            -Configuration Release -Mode $mode -NoFailOnRegression:$reportOnly `
+            -MicroArguments @('--warmupCount', '2', '--iterationCount', '3', '--iterationTime', '100', '--buildTimeout', '600')
 
       - name: Upload Perf Artifacts
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: perf-guardrails-${{ github.run_id }}
+          if-no-files-found: error
+          include-hidden-files: true
           path: |
-            tests/CSharpDB.Benchmarks/results/perf-guardrails-last.md
-            tests/CSharpDB.Benchmarks/results/perf-guardrails-run-logs/*.log
-            BenchmarkDotNet.Artifacts/results/*.csv
-            BenchmarkDotNet.Artifacts/*.log
+            .tmp/perf-guardrails/evidence/
+            BenchmarkDotNet.Artifacts/
+            tests/CSharpDB.Benchmarks/BenchmarkDotNet.Artifacts/
+            .tmp/perf-guardrails/base/BenchmarkDotNet.Artifacts/
+            .tmp/perf-guardrails/base/tests/CSharpDB.Benchmarks/BenchmarkDotNet.Artifacts/
+            .tmp/perf-guardrails/head/BenchmarkDotNet.Artifacts/
+            .tmp/perf-guardrails/head/tests/CSharpDB.Benchmarks/BenchmarkDotNet.Artifacts/
+            .tmp/perf-guardrails/base/tests/CSharpDB.Benchmarks/results/perf-guardrails-run-logs/
+            .tmp/perf-guardrails/head/tests/CSharpDB.Benchmarks/results/perf-guardrails-run-logs/

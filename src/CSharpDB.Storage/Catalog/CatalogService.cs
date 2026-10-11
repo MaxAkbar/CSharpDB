@@ -29,6 +29,10 @@ internal sealed class CatalogService
     private readonly CatalogCache _cacheState = new();
     private BTree? _catalogTree;
     private long _schemaVersion;
+    private CatalogReadSnapshot? _lastReadCapture;
+    private CatalogReadChanges? _readCaptureChanges;
+    private bool _readCaptureInvalidated = true;
+    private bool _readCaptureTrustsExactCounts;
     private ulong _rowVersionHighWater;
     private IndexSchema[] _indexesSnapshot = Array.Empty<IndexSchema>();
     private string[] _viewNamesSnapshot = Array.Empty<string>();
@@ -170,11 +174,59 @@ internal sealed class CatalogService
     }
 
     public long SchemaVersion => Volatile.Read(ref _schemaVersion);
+
+    // The caller must serialize live-catalog mutation/publication while capturing.
+    // A freshly loaded private snapshot catalog is already exclusively owned.
+    internal CatalogReadSnapshot CaptureReadSnapshot(
+        CatalogReadSnapshot? previous = null,
+        bool trustExactRowCounts = true)
+    {
+        CatalogReadMetadata metadata;
+        if (!_readCaptureInvalidated && previous is not null && ReferenceEquals(previous, _lastReadCapture) &&
+            trustExactRowCounts && _readCaptureTrustsExactCounts)
+        {
+            metadata = previous.Metadata.CaptureChanges(_readCaptureChanges!, _cache, _tableRootPages,
+                _indexRootPages, _tableStatsCache, _exactTableRowCounts, _columnStatsCache);
+        }
+        else
+        {
+            metadata = new CatalogReadMetadata(previous?.Metadata, SchemaVersion, _indexProvider,
+                _cache, _tableRootPages, GetForeignKeysForTable, GetReferencingForeignKeys,
+                _indexCache, _indexRootPages, _viewCache, _triggerCache, _tableStatsCache,
+                _exactTableRowCounts, trustExactRowCounts, _columnStatsCache,
+                _columnDistributionStatsCache, _indexPrefixStatsCache);
+        }
+
+        var snapshot = new CatalogReadSnapshot(metadata, _rowVersionHighWater, _pager.PageCount,
+            _pager.SchemaRootPage, _pager.FreelistHead, _pager.ChangeCounter);
+        _readCaptureChanges ??= new CatalogReadChanges();
+        _readCaptureChanges.Clear();
+        _readCaptureInvalidated = false;
+        _readCaptureTrustsExactCounts = trustExactRowCounts;
+        _lastReadCapture = snapshot;
+        return snapshot;
+    }
+
+    private void TrackReadCaptureChange(HashSet<string>? changes, string name)
+    {
+        if (_readCaptureInvalidated || changes is null)
+            return;
+        if (changes.Add(name) && _readCaptureChanges!.Count > CatalogReadChanges.MaximumEntries)
+            InvalidateReadCapture();
+    }
+
+    private void InvalidateReadCapture()
+    {
+        _readCaptureInvalidated = true;
+        _readCaptureChanges?.Clear();
+    }
+
     public ulong RowVersionHighWater => _rowVersionHighWater;
     public bool HasAdvisoryCatalogContentChanges => _advisoryCatalogContentChanged;
 
     public async ValueTask ReloadAsync(CancellationToken ct = default)
     {
+        InvalidateReadCapture();
         _catalogTree = null;
         _indexCatalogTree = null;
         _viewCatalogTree = null;
@@ -761,7 +813,10 @@ internal sealed class CatalogService
                 continue;
 
             if (_cache.TryGetValue(tableName, out var schema) && schema.NextRowId < nextRowId)
+            {
                 schema.NextRowId = nextRowId;
+                TrackReadCaptureChange(_readCaptureChanges?.Tables, tableName);
+            }
 
             _persistedTableNextRowIds[tableName] = nextRowId;
         }
@@ -1004,6 +1059,11 @@ internal sealed class CatalogService
     {
         if (!_tableRootPages.TryGetValue(oldTableName, out uint rootPage))
             throw new CSharpDbException(ErrorCode.TableNotFound, $"Table '{oldTableName}' not found.");
+
+        // Earlier writes in this transaction may have split the tree before its
+        // new root has been persisted. A schema change must preserve that root.
+        if (_tableTrees.TryGetValue(oldTableName, out var currentTree))
+            rootPage = currentTree.RootPageId;
 
         if (!_cache.TryGetValue(oldTableName, out var oldSchema))
             throw new CSharpDbException(ErrorCode.TableNotFound, $"Table '{oldTableName}' not found.");
@@ -1773,6 +1833,9 @@ internal sealed class CatalogService
     {
         if (!_indexRootPages.TryGetValue(oldIndexName, out uint rootPage))
             throw new CSharpDbException(ErrorCode.TableNotFound, $"Index '{oldIndexName}' not found.");
+
+        if (_indexStores.TryGetValue(oldIndexName, out var currentStore))
+            rootPage = currentStore.RootPageId;
 
         if (!_indexCache.TryGetValue(oldIndexName, out var oldSchema))
             throw new CSharpDbException(ErrorCode.TableNotFound, $"Index '{oldIndexName}' not found.");
@@ -3659,6 +3722,7 @@ internal sealed class CatalogService
 
     private void CacheTableStatistics(TableStatistics stats, bool isExact, bool markDirty)
     {
+        TrackReadCaptureChange(_readCaptureChanges?.TableStatistics, stats.TableName);
         var normalized = new TableStatistics
         {
             TableName = stats.TableName,
@@ -3684,6 +3748,7 @@ internal sealed class CatalogService
 
     private async ValueTask DeleteTableStatisticsAsync(string tableName, CancellationToken ct)
     {
+        TrackReadCaptureChange(_readCaptureChanges?.TableStatistics, tableName);
         _dirtyTableStatistics.Remove(tableName);
         _pendingTableRowCountDeltas.Remove(tableName);
         _exactTableRowCounts.Remove(tableName);
@@ -3832,6 +3897,7 @@ internal sealed class CatalogService
 
     private void CacheColumnDistributionStatistics(ColumnDistributionStatistics stats)
     {
+        InvalidateReadCapture();
         var normalized = new ColumnDistributionStatistics
         {
             TableName = stats.TableName,
@@ -3871,6 +3937,7 @@ internal sealed class CatalogService
 
     private void RemoveColumnDistributionStatisticsFromCache(string tableName, string columnName)
     {
+        InvalidateReadCapture();
         string cacheKey = GetColumnDistributionStatisticsCacheKey(tableName, columnName);
         _columnDistributionStatsCache.Remove(cacheKey);
 
@@ -3940,6 +4007,7 @@ internal sealed class CatalogService
 
     private void CacheIndexPrefixStatistics(IndexPrefixStatistics stats)
     {
+        InvalidateReadCapture();
         var normalized = new IndexPrefixStatistics
         {
             IndexName = stats.IndexName,
@@ -3965,6 +4033,7 @@ internal sealed class CatalogService
 
     private void RemoveIndexPrefixStatisticsFromCache(string indexName, string tableName)
     {
+        InvalidateReadCapture();
         _indexPrefixStatsCache.Remove(indexName);
 
         if (_indexPrefixStatsByTable.TryGetValue(tableName, out var existing))
@@ -4008,6 +4077,7 @@ internal sealed class CatalogService
     private void CacheColumnStatistics(ColumnStatistics stats, bool markDirty = false)
     {
         string cacheKey = GetColumnStatisticsCacheKey(stats.TableName, stats.ColumnName);
+        TrackReadCaptureChange(_readCaptureChanges?.ColumnStatistics, cacheKey);
         _columnStatsCache[cacheKey] = stats;
         if (markDirty)
             _dirtyColumnStatistics.Add(cacheKey);
@@ -4031,6 +4101,7 @@ internal sealed class CatalogService
     private void RemoveColumnStatisticsFromCache(string tableName, string columnName)
     {
         string cacheKey = GetColumnStatisticsCacheKey(tableName, columnName);
+        TrackReadCaptureChange(_readCaptureChanges?.ColumnStatistics, cacheKey);
         _columnStatsCache.Remove(cacheKey);
         _dirtyColumnStatistics.Remove(cacheKey);
 
@@ -4152,6 +4223,7 @@ internal sealed class CatalogService
         {
             if (!_cache.ContainsKey(existingTableName))
             {
+                TrackReadCaptureChange(_readCaptureChanges?.TableStatistics, existingTableName);
                 _tableStatsCache.Remove(existingTableName);
                 _exactTableRowCounts.Remove(existingTableName);
             }
@@ -4610,6 +4682,7 @@ internal sealed class CatalogService
 
     private void IncrementSchemaVersion()
     {
+        InvalidateReadCapture();
         Interlocked.Increment(ref _schemaVersion);
     }
 
@@ -4702,6 +4775,7 @@ internal sealed class CatalogService
 
         _tableRootPages[tableName] = currentRootPage;
         _persistedTableNextRowIds[tableName] = schema.NextRowId;
+        TrackReadCaptureChange(_readCaptureChanges?.Tables, tableName);
         _pager.SchemaRootPage = _catalogTree.RootPageId;
         return currentRootPage != persistedRootPage;
     }
@@ -4727,6 +4801,7 @@ internal sealed class CatalogService
         await _indexCatalogTree.InsertAsync(key, payload, ct);
 
         _indexRootPages[indexName] = currentRootPage;
+        TrackReadCaptureChange(_readCaptureChanges?.Indexes, indexName);
         return true;
     }
 

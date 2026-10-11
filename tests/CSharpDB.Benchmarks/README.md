@@ -463,6 +463,67 @@ tag exists. A failed gate therefore leaves the version untagged and retryable.
 The command then creates the protected tag with the maintainer's authenticated
 Git identity and starts a resumable hosted publication of that exact bundle.
 
+### Hosted guardrail evidence
+
+`Run-PairedPerfGuardrails.ps1` requires two clean, disposable product checkouts
+and runs from a separate harness checkout. It copies that harness into both
+products, builds both before measurement, then executes **base/head** followed
+by **head/base**. The PR lane retains its nine checks and the release lane its
+nineteen checks, including durable SQL batching and diagnostic suites. Product
+build properties and packages remain revision-specific and have separate hash
+manifests. The harness identity records source, project, script, and configuration
+hashes separately from the product commit SHA.
+The focused benchmark solution lists its product dependency closure so Release
+builds retain Release configuration throughout that graph.
+
+Hosted micro runs use two warmups and three measured iterations of 100 ms;
+diagnostic suite arguments and numeric thresholds are unchanged. Both revisions
+and both orders must use identical command arguments, runtime identities, and
+enforceable machine fingerprints. This shorter hosted sampling profile limits
+measurement time while preserving configured row coverage; it is not a
+dedicated-runner release qualification or a source for published performance tables.
+
+Every check must compare all of its `requiredRows`, or the entire identical
+base/head key set when that list is absent, and meet its positive
+`minimumEnforceableComparisons`. Required current-only rows remain required but
+cannot satisfy paired comparison coverage. Skipped or compatible-machine rows
+cannot make a check green. `-NoFailOnRegression` suppresses threshold failures;
+missing baselines, manifests, fingerprints, runtime identity, CSVs, logs, rows,
+nonnumeric metrics, zero executed cases, and incomplete coverage always fail.
+The exported micro CSV row count must also match the BenchmarkDotNet executed
+case count for each invocation. Duplicate exports cannot supply case coverage
+for one invocation or be reused across invocations. A failed recheck replaces
+the generated report with its current error instead of retaining a prior pass.
+
+Each capture contains `manifest.json`, `machine.json`, `runtime.json`, a harness
+file manifest, and hashes for every retained artifact. Comparisons validate those
+hashes and require every referenced CSV for both inputs. `Compare-Baseline.ps1`
+requires `-CurrentSnapshot`; raw CSV directories cannot supply captured
+provenance. Each product selects its own SDK through `global.json`; SDK changes
+remain enforceable when the actual measured runtime identity matches.
+Historical snapshots without this
+provenance remain historical evidence and are rejected as guardrail baselines;
+their missing metadata is never synthesized. An explicit `-BaselineSnapshot`
+overrides historical per-check baseline choices. Fresh local captures can be
+created with `Capture-Baseline.ps1` or `Run-Perf-Guardrails.ps1 -CaptureOnly`.
+
+```powershell
+# Run from the harness checkout; base/head directories are disposable.
+./tests/CSharpDB.Benchmarks/scripts/Run-PairedPerfGuardrails.ps1 `
+  -BaseRoot C:/perf/base -HeadRoot C:/perf/head `
+  -OutputPath C:/perf/evidence-new -Mode pr -NoFailOnRegression
+
+# Focused synthetic integrity, coverage, and paired-driver tests.
+./tests/CSharpDB.Benchmarks/scripts/Test-PerfGuardrails.ps1
+```
+
+The workflow uploads both repository-root and benchmark-directory
+`BenchmarkDotNet.Artifacts`, per-run logs, raw and aggregate CSVs for all four
+captures, the execution order, build-input manifests, and both order reports.
+`Compare-PairedPerfGuardrails.ps1 -OutputPath ...` revalidates retained evidence
+without rerunning measurements. Hosted runtime and job-duration verification
+must still be performed on GitHub after review.
+
 ### Optional local durable-write diagnostics
 
 During a new local diagnostic, the repository must remain clean because both
@@ -603,9 +664,10 @@ When explicitly requested, the local wrapper can still publish a diagnostic
 That status is retained for audit and tooling compatibility only; the hosted
 release path does not read it.
 
-The existing scheduled perf-guardrail workflow remains report-only and includes
-the durable SQL batching baseline plus its configured micro and diagnostic
-checks. The other supplemental two-revision suites remain selectable with
+The scheduled perf-guardrail workflow reports timing regressions and always
+fails invalid evidence. It compares the head product commit with its parent
+(PRs use the PR base SHA; manual runs can select `base_ref`) in the same job.
+The other supplemental two-revision suites remain selectable with
 `-SuiteName` (or together by omitting it) for manual investigation; they do not
 run again as part of SQL release qualification and do not block publishing.
 
@@ -729,3 +791,27 @@ Related files:
 - `scripts/Test-PreviousReleasePerformance.ps1`: clean two-revision benchmark runner.
 - `scripts/Watch-LocalPerformanceEnvironment.ps1`: fail-closed observable external-load evidence monitor.
 - `scripts/Update-BenchmarkReadme.ps1`: generated-results updater.
+
+## Prepared SELECT plan reuse
+
+`PreparedQueryPlanReuseBenchmarks` exercises public ADO.NET prepared reads with 1, 64, 65, 256, and 2048 recurring parameter sets. Each execution validates a fixed one-row secondary-index or primary-key lookup, a decode-free primary-key projection, or a four-row ordered secondary-index or physical primary-key range. This covers changing values beyond the old 64-entry bound-statement cache, unlike stable-text plan-cache benchmarks.
+
+```powershell
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --micro --filter '*PreparedQueryPlanReuseBenchmarks*'
+```
+
+The prepared index path currently supports non-null integral parameters in comparisons against one indexed integer column, column/star projections, optional ascending order on that column, and constant LIMIT/OFFSET. Physical INTEGER/BIGINT primary-key equality and ranges also reuse plans, including additional bounds on the same key. Equality preserves cache-only and decode-free lookup paths; ranges seek to the lower bound and stop at the upper bound without requiring a secondary index. It caches up to 256 template plans per planner, invalidates them on schema changes, and gives each execution its own parameter frame and operators. Different values do not consume additional prepared-plan entries. Unsupported shapes, parameter types, catalogs, and physical EXPLAIN capture use the ordinary planner; its value-bound cache remains limited to 64 entries. Prepared metadata reuse does not imply that every parameterized query uses this path.
+
+The physical primary-key range extension applies to direct database, explicit write-transaction and reader-session planners, including pooled ADO reads. `ReaderSession` uses frozen committed catalog metadata so roots, schemas, and counts remain consistent with its snapshot. The isolated local pooled-range comparison passed its median, allocation and P99 checks; earlier durable-write P99 diagnostics remain recorded separately. Existing prepared equality and secondary-index eligibility is unchanged. This benchmark fixture uses `Pooling=false`; see the October 4 isolated pooled-range comparison in [HISTORY.md](HISTORY.md) for the file-backed pooled measurements and their limits. Pooled queries create fresh reader planners, so their improvement comes from bounded primary-key access rather than sharing a cached plan across queries. A subsequent allocation profile found unnecessary next-leaf read-ahead after a range's upper bound; bounded cursors now avoid that speculative read while preserving traversal. The separate local follow-up in [HISTORY.md](HISTORY.md) records the short-range gains and larger-range regression checks.
+
+Snapshot pagers also avoid allocating unused writer diagnostics and allocation delegates. The October 4 snapshot-pager follow-up in [HISTORY.md](HISTORY.md) records the isolated component savings and paired pooled-query results, including the modest timing changes and qualification limits.
+
+Reader planners allocate cache containers and adaptive diagnostics only when used. The October 4 planner-setup follow-up in [HISTORY.md](HISTORY.md) records a further 10.01% allocation reduction and 5.36% lower observed median latency for four-row pooled prepared ranges. Larger ranges, arithmetic projections, and self joins passed the declared regression checks; individual tail timings still varied. Planners remain bound to individual reader snapshots. The same validation found and fixed stale trigger bodies after replacement when fast inserts bypassed the normal schema-cache check.
+
+Ordinary SELECTs with arithmetic projections and join-local predicates can also use bounded physical integer primary-key scans after existing lookup selection fails. Residual filters run before sorting and LIMIT. The October 4 ordinary-range follow-up in [HISTORY.md](HISTORY.md) measured 94.91% lower median latency and 89.32% less allocation for its four-row arithmetic/join fixtures. Two prepared controls exceeded the original median regression limit in one pair; a separate focused comparison did not reproduce a persistent slowdown. Both results and their limits are retained.
+
+The lazy-table-scan change committed in `d55c5d98` defers 64-row buffers until batch access. The October 4 follow-up in [HISTORY.md](HISTORY.md) records a further 12.89% allocation reduction for its small expression/join fixtures. The original comparison and focused check failed latency checks. A later three-arm diagnostic with matched compiler inputs, one case per process, and a shared fixture passed its fixed checks: the large prepared-range slowdown did not reproduce, and the expression-only allocation reduction was about 13.34%. The earlier cause remains unresolved, and this limited diagnostic does not establish a latency improvement or release-wide qualification.
+
+A subsequent wide-range profile led to repairing unreachable whole-batch forwarding in `LimitOperator`. Owned fallback buffers remain separate from borrowed batches, preserving retention and partial-tail behavior. The October 4 LIMIT follow-up in [HISTORY.md](HISTORY.md) records 7.02% lower observed median latency for 4,096-row pooled primary-key reads across two pairs. All nine cases passed the fixed regression checks; individual P99 measurements still varied. The result is local evidence for this bounded change, with release-wide qualification still open.
+
+For nullable indexed columns, supported comparison predicates exclude NULL rows, allowing ordered index access without losing matching rows. Broad equality values still consult the existing selectivity guard. Tiny LIMIT windows without an offset use the row boundary, and index-scan/limit batch buffers are allocated when requested. The fixture uses an in-memory database; use controlled file-backed paired runs when qualifying a release, and distinguish improvements from plan reuse from improvements in the chosen access path and result buffering.

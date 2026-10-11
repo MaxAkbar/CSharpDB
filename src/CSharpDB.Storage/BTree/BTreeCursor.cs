@@ -12,6 +12,7 @@ public sealed class BTreeCursor : IAsyncDisposable
     private readonly BTree _tree;
     private readonly Pager _pager;
     private readonly int _maxResolvedPayloadBytes;
+    private readonly long? _prefetchUpperBound;
     private uint _currentPageId;
     private int _currentIndex;
     private PageReadBuffer _currentLeafPage;
@@ -27,12 +28,14 @@ public sealed class BTreeCursor : IAsyncDisposable
     internal BTreeCursor(
         BTree tree,
         Pager pager,
-        int maxResolvedPayloadBytes = int.MaxValue)
+        int maxResolvedPayloadBytes = int.MaxValue,
+        long? prefetchUpperBound = null)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxResolvedPayloadBytes);
         _tree = tree;
         _pager = pager;
         _maxResolvedPayloadBytes = maxResolvedPayloadBytes;
+        _prefetchUpperBound = prefetchUpperBound;
         _currentPageId = 0;
         _currentIndex = -1;
         _currentLeafPage = default;
@@ -248,9 +251,11 @@ public sealed class BTreeCursor : IAsyncDisposable
 
         if (_prefetchedLeafTask is not null && _prefetchedLeafPageId == _currentPageId)
         {
+            bool consumedPrefetch = false;
             try
             {
                 _currentLeafPage = await _prefetchedLeafTask.WaitAsync(ct);
+                consumedPrefetch = true;
             }
             catch (OperationCanceledException)
             {
@@ -262,7 +267,17 @@ public sealed class BTreeCursor : IAsyncDisposable
             }
             finally
             {
-                ClearPrefetchedLeaf();
+                if (consumedPrefetch)
+                {
+                    // The read has finished. Keep its uncancelled source so the
+                    // next prefetch can reuse the cancellation registrations.
+                    _prefetchedLeafPageId = PageConstants.NullPageId;
+                    _prefetchedLeafTask = null;
+                }
+                else
+                {
+                    ClearPrefetchedLeaf();
+                }
             }
         }
         else
@@ -293,6 +308,16 @@ public sealed class BTreeCursor : IAsyncDisposable
             return;
         }
 
+        // Later leaves contain strictly larger keys. If this leaf reaches the
+        // requested upper bound, reading ahead cannot help that range. This is
+        // only a prefetch hint: callers can still move or seek past the bound.
+        if (_prefetchUpperBound.HasValue && _currentLeaf.CellCount > 0 &&
+            BTree.ReadLeafKey(_currentLeaf, _currentLeaf.CellCount - 1) >= _prefetchUpperBound.Value)
+        {
+            ClearPrefetchedLeaf();
+            return;
+        }
+
         if (_prefetchedLeafTask is not null && _prefetchedLeafPageId == nextLeafPageId)
             return;
 
@@ -302,8 +327,12 @@ public sealed class BTreeCursor : IAsyncDisposable
             return;
         }
 
+        // Never replace a still-owned read with one using the same source.
+        if (_prefetchedLeafTask is not null)
+            ClearPrefetchedLeaf();
+
         _prefetchedLeafPageId = nextLeafPageId;
-        _prefetchedLeafCancellationSource = new CancellationTokenSource();
+        _prefetchedLeafCancellationSource ??= new CancellationTokenSource();
         _prefetchedLeafTask = _pager.ReadPageUncachedAsync(nextLeafPageId, _prefetchedLeafCancellationSource.Token).AsTask();
     }
 

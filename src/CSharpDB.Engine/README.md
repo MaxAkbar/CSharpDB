@@ -397,7 +397,9 @@ Console.WriteLine($"Live row count: {liveResult.Current[0].AsInteger}");
 ```
 
 `ReaderSession` gives you a stable snapshot from the moment it is created, even
-while the writer keeps committing changes. Dispose each `QueryResult` before
+while the writer keeps committing changes. Its catalog metadata belongs to that
+same snapshot, so later commits and checkpoints do not replace the reader's
+schema or table roots. Dispose each `QueryResult` before
 executing the next query on the same reader session.
 
 Reuse the same `ReaderSession` for a burst of related reads when possible. The

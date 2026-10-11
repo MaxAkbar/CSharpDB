@@ -2,6 +2,7 @@
 param(
     [string]$BaselineSnapshot = "",
     [string]$CurrentMicroResultsDir = "",
+    [string]$CurrentSnapshot = "",
     [string]$ThresholdsPath = "",
     [switch]$NoFailOnRegression,
     [string]$ReportPath = ""
@@ -25,7 +26,7 @@ function Get-OptionalProperty
 
     if ($Object.PSObject.Properties.Name -contains $Name)
     {
-        return $Object.$Name
+        return ,$Object.$Name
     }
 
     return $DefaultValue
@@ -41,124 +42,6 @@ function Normalize-ComparableText
     }
 
     return (($Value.Trim().ToLowerInvariant()) -replace "\s+", " ")
-}
-
-function Get-OsPlatformName
-{
-    if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows))
-    {
-        return "Windows"
-    }
-
-    if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Linux))
-    {
-        return "Linux"
-    }
-
-    if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::OSX))
-    {
-        return "macOS"
-    }
-
-    return "Unknown"
-}
-
-function Get-ProcessorName
-{
-    $cpuName = ""
-
-    try
-    {
-        if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows) -and
-            (Get-Command Get-CimInstance -ErrorAction SilentlyContinue))
-        {
-            $cpuName = [string](Get-CimInstance Win32_Processor | Select-Object -First 1 -ExpandProperty Name)
-        }
-    }
-    catch
-    {
-    }
-
-    if ([string]::IsNullOrWhiteSpace($cpuName))
-    {
-        try
-        {
-            if (Get-Command lscpu -ErrorAction SilentlyContinue)
-            {
-                $modelLine = & lscpu 2>$null | Where-Object { $_ -match "^Model name:\s*(.+)$" } | Select-Object -First 1
-                if ($modelLine -match "^Model name:\s*(.+)$")
-                {
-                    $cpuName = [string]$matches[1]
-                }
-            }
-        }
-        catch
-        {
-        }
-    }
-
-    if ([string]::IsNullOrWhiteSpace($cpuName))
-    {
-        try
-        {
-            if (Get-Command sysctl -ErrorAction SilentlyContinue)
-            {
-                $cpuName = [string]((& sysctl -n machdep.cpu.brand_string 2>$null) | Select-Object -First 1)
-            }
-        }
-        catch
-        {
-        }
-    }
-
-    if ([string]::IsNullOrWhiteSpace($cpuName))
-    {
-        $cpuName = [string]$env:PROCESSOR_IDENTIFIER
-    }
-
-    return $cpuName.Trim()
-}
-
-function Get-DotnetMajorMinor
-{
-    param([Parameter(Mandatory = $false)][AllowNull()][AllowEmptyString()][string]$Version)
-
-    $trimmed = [string]$Version
-    if ($trimmed -match "^(?<major>\d+)\.(?<minor>\d+)")
-    {
-        return "$($matches.major).$($matches.minor)"
-    }
-
-    return ""
-}
-
-function Get-MachineFingerprint
-{
-    $dotnetVersion = ""
-    try
-    {
-        $dotnetVersion = [string]((& dotnet --version) | Select-Object -First 1)
-    }
-    catch
-    {
-    }
-
-    $dotnetVersion = $dotnetVersion.Trim()
-
-    return [pscustomobject]@{
-        fingerprintVersion = 1
-        capturedUtc = (Get-Date).ToUniversalTime().ToString("o")
-        runnerId = [string]$env:CSHARPDB_PERF_RUNNER_ID
-        machineName = [Environment]::MachineName
-        cpuName = Get-ProcessorName
-        logicalCoreCount = [Environment]::ProcessorCount
-        osPlatform = Get-OsPlatformName
-        osDescription = [System.Runtime.InteropServices.RuntimeInformation]::OSDescription.Trim()
-        osArchitecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
-        processArchitecture = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
-        dotnetVersion = $dotnetVersion
-        dotnetMajorMinor = Get-DotnetMajorMinor -Version $dotnetVersion
-    }
 }
 
 function Get-SnapshotMachineFingerprint
@@ -187,7 +70,7 @@ function Format-MachineSummary
     $cores = [string](Get-OptionalProperty -Object $Fingerprint -Name "logicalCoreCount" -DefaultValue "?")
     $os = [string](Get-OptionalProperty -Object $Fingerprint -Name "osDescription" -DefaultValue "<unknown os>")
     $dotnet = [string](Get-OptionalProperty -Object $Fingerprint -Name "dotnetVersion" -DefaultValue "<unknown dotnet>")
-    return "$runnerDisplay; cpu=$cpuName; cores=$cores; os=$os; dotnet=$dotnet"
+    return "$runnerDisplay; cpu=$cpuName; cores=$cores; os=$os; sdk=$dotnet"
 }
 
 function Get-MachineCompatibility
@@ -199,12 +82,7 @@ function Get-MachineCompatibility
 
     if ($null -eq $BaselineFingerprint)
     {
-        return [pscustomobject]@{
-            Classification = "legacy"
-            Enforcement = "strict"
-            Summary = "Strict (legacy baseline without machine fingerprint)"
-            Notes = "Baseline snapshot has no machine.json; retaining strict comparison."
-        }
+        throw 'Baseline snapshot has no machine fingerprint.'
     }
 
     $baselineRunnerId = Normalize-ComparableText ([string](Get-OptionalProperty -Object $BaselineFingerprint -Name "runnerId" -DefaultValue ""))
@@ -225,16 +103,12 @@ function Get-MachineCompatibility
         (Normalize-ComparableText ([string](Get-OptionalProperty -Object $CurrentFingerprint -Name "osArchitecture" -DefaultValue "")))
     $sameProcessArchitecture = (Normalize-ComparableText ([string](Get-OptionalProperty -Object $BaselineFingerprint -Name "processArchitecture" -DefaultValue ""))) -eq
         (Normalize-ComparableText ([string](Get-OptionalProperty -Object $CurrentFingerprint -Name "processArchitecture" -DefaultValue "")))
-    $baselineDotnetMajorMinor = Normalize-ComparableText (Get-DotnetMajorMinor -Version ([string](Get-OptionalProperty -Object $BaselineFingerprint -Name "dotnetMajorMinor" -DefaultValue (Get-OptionalProperty -Object $BaselineFingerprint -Name "dotnetVersion" -DefaultValue ""))))
-    $currentDotnetMajorMinor = Normalize-ComparableText (Get-DotnetMajorMinor -Version ([string](Get-OptionalProperty -Object $CurrentFingerprint -Name "dotnetMajorMinor" -DefaultValue (Get-OptionalProperty -Object $CurrentFingerprint -Name "dotnetVersion" -DefaultValue ""))))
-    $sameDotnetMajorMinor = (-not [string]::IsNullOrWhiteSpace($baselineDotnetMajorMinor)) -and ($baselineDotnetMajorMinor -eq $currentDotnetMajorMinor)
     $sameOsDescription = (Normalize-ComparableText ([string](Get-OptionalProperty -Object $BaselineFingerprint -Name "osDescription" -DefaultValue ""))) -eq
         (Normalize-ComparableText ([string](Get-OptionalProperty -Object $CurrentFingerprint -Name "osDescription" -DefaultValue "")))
 
     $sameHardware = $sameCpu -and $sameCoreCount -and $sameOsPlatform -and $sameOsArchitecture -and $sameProcessArchitecture
-    $sameRuntimeFamily = $sameDotnetMajorMinor
 
-    if ($sameRunnerId -or (($sameMachineName -and $sameOsDescription) -and $sameHardware -and $sameRuntimeFamily))
+    if (($sameRunnerId -or ($sameMachineName -and $sameOsDescription)) -and $sameHardware)
     {
         return [pscustomobject]@{
             Classification = "exact"
@@ -244,7 +118,7 @@ function Get-MachineCompatibility
         }
     }
 
-    if ($sameHardware -and $sameRuntimeFamily)
+    if ($sameHardware)
     {
         return [pscustomobject]@{
             Classification = "compatible"
@@ -359,9 +233,11 @@ function Convert-ComparableNumber
     )
 
     $text = $Value.Trim("'").Trim() -replace ",", ""
-    if ($text -match "^([+-]?[0-9]*\.?[0-9]+)")
+    if ($text -match "^([+-]?[0-9]*\.?[0-9]+)$")
     {
-        return [double]$matches[1]
+        $number = [double]$matches[1]
+        if (-not [double]::IsFinite($number)) { throw "Nonfinite numeric $Description value '$Value'." }
+        return $number
     }
 
     throw "Unable to parse numeric $Description value '$Value'."
@@ -403,9 +279,7 @@ function Test-ExtraInfoChecks
         $currentRaw = Get-ExtraInfoValue -Row $CurrentRow -Key $key
         if ($null -eq $baselineRaw -or $null -eq $currentRaw)
         {
-            $regressed = $true
-            $notes.Add("ExtraInfo $key missing") | Out-Null
-            continue
+            throw "ExtraInfo $key missing in baseline or current results."
         }
 
         $baselineValue = Convert-ComparableNumber -Value $baselineRaw -Description "baseline ExtraInfo '$key'"
@@ -516,9 +390,7 @@ function Test-CurrentExtraInfoChecks
         $currentRaw = Get-ExtraInfoValue -Row $CurrentRow -Key $key
         if ($null -eq $currentRaw)
         {
-            $regressed = $true
-            $notes.Add("ExtraInfo $key missing") | Out-Null
-            continue
+            throw "Required current ExtraInfo $key missing."
         }
 
         $currentValue = Convert-ComparableNumber -Value $currentRaw -Description "current ExtraInfo '$key'"
@@ -527,9 +399,7 @@ function Test-CurrentExtraInfoChecks
         $maxRatioText = [string](Get-OptionalProperty -Object $check -Name "maxRatio" -DefaultValue "")
         if (-not [string]::IsNullOrWhiteSpace($minRatioText) -or -not [string]::IsNullOrWhiteSpace($maxRatioText))
         {
-            $regressed = $true
-            $notes.Add("$key ratio check requires a baseline row") | Out-Null
-            continue
+            throw "$key ratio check requires a baseline row."
         }
 
         $minValueText = [string](Get-OptionalProperty -Object $check -Name "minValue" -DefaultValue "")
@@ -786,8 +656,25 @@ function Add-ComparisonResult
 }
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+. (Join-Path $scriptDir 'Perf-Evidence.ps1')
 $benchDir = (Resolve-Path (Join-Path $scriptDir "..")).Path
 $repoRoot = (Resolve-Path (Join-Path $benchDir "..\\..")).Path
+
+$reportWritten = $false
+if (-not [string]::IsNullOrWhiteSpace($ReportPath)) {
+    if (-not [IO.Path]::IsPathRooted($ReportPath)) { $ReportPath = Join-Path $repoRoot $ReportPath }
+    New-Item -ItemType Directory -Path (Split-Path -Parent $ReportPath) -Force | Out-Null
+    @('# Performance Guardrail Report', '', 'Status: INCOMPLETE', '', 'Comparison has not completed.') |
+        Set-Content -LiteralPath $ReportPath -Encoding utf8
+}
+trap {
+    if (-not $reportWritten -and -not [string]::IsNullOrWhiteSpace($ReportPath)) {
+        @('# Performance Guardrail Report', '', 'Status: INVALID', '',
+            "Generated (UTC): $([DateTime]::UtcNow.ToString('u'))", '', $_.Exception.Message) |
+            Set-Content -LiteralPath $ReportPath -Encoding utf8
+    }
+    throw $_
+}
 
 if ([string]::IsNullOrWhiteSpace($ThresholdsPath))
 {
@@ -804,8 +691,16 @@ if (-not (Test-Path $ThresholdsPath))
 }
 
 $config = Get-Content -Path $ThresholdsPath -Raw | ConvertFrom-Json
+if (@($config.checks).Count -eq 0) { throw 'Guardrails require at least one configured check.' }
+$explicitBaseline = -not [string]::IsNullOrWhiteSpace($BaselineSnapshot)
+if ([string]::IsNullOrWhiteSpace($CurrentSnapshot)) { throw 'Current snapshot manifest and captured fingerprint are required, including in report mode. Use -CurrentSnapshot with a fresh capture.' }
+$currentManifest = $null
+if (-not [string]::IsNullOrWhiteSpace($CurrentSnapshot)) {
+    $CurrentSnapshot = (Resolve-Path -LiteralPath $CurrentSnapshot).Path
+    $currentManifest = Assert-PerfSnapshot $CurrentSnapshot
+}
 $baselineRoot = Join-Path $benchDir "baselines"
-$hasCheckBaselineOverrides = @(
+$hasCheckBaselineOverrides = (-not $explicitBaseline) -and @(
     @($config.checks) |
     Where-Object { -not [string]::IsNullOrWhiteSpace([string](Get-OptionalProperty -Object $_ -Name "baselineSnapshot" -DefaultValue "")) }
 ).Count -gt 0
@@ -858,7 +753,7 @@ if (-not $baselineResolved -and $hasCheckBaselineOverrides)
 }
 elseif (-not $baselineResolved)
 {
-    Write-Host "No baseline snapshot found. Skipping comparison and reporting raw benchmark results only."
+    throw 'No baseline snapshot found. Evidence integrity requires a baseline even in report mode.'
 }
 
 $checksUsingDefaultCurrentResultsDir = @(
@@ -867,7 +762,7 @@ $checksUsingDefaultCurrentResultsDir = @(
 ).Count -gt 0
 
 $resolvedDefaultCurrentResultsDir = $null
-if ($checksUsingDefaultCurrentResultsDir)
+if ($checksUsingDefaultCurrentResultsDir -and $null -eq $currentManifest)
 {
     $resolvedDefaultCurrentResultsDir = Resolve-CurrentMicroResultsDirectory `
         -BenchDir $benchDir `
@@ -876,7 +771,8 @@ if ($checksUsingDefaultCurrentResultsDir)
 }
 
 $reportCurrentLabel =
-if ($checksUsingDefaultCurrentResultsDir)
+if ($null -ne $currentManifest) { $CurrentSnapshot }
+elseif ($checksUsingDefaultCurrentResultsDir)
 {
     if (@(
             @($config.checks) |
@@ -895,56 +791,26 @@ else
     "<per-check current results directories>"
 }
 
-if (-not $baselineResolved -and -not $hasCheckBaselineOverrides)
-{
-    $summary = "No baseline snapshot available. Benchmark run completed but no regression comparison performed."
-    Write-Host $summary
-
-    if (-not [string]::IsNullOrWhiteSpace($ReportPath))
-    {
-        if (-not [System.IO.Path]::IsPathRooted($ReportPath))
-        {
-            $ReportPath = Join-Path $repoRoot $ReportPath
-        }
-
-        $reportDir = Split-Path -Parent $ReportPath
-        if (-not [string]::IsNullOrWhiteSpace($reportDir))
-        {
-            New-Item -ItemType Directory -Path $reportDir -Force | Out-Null
-        }
-
-        $lines = New-Object System.Collections.Generic.List[string]
-        $lines.Add("# Performance Guardrail Report")
-        $lines.Add("")
-        $lines.Add("- Baseline: **not available** (baselines directory is not present)")
-        $lines.Add("- Current: ``$reportCurrentLabel``")
-        $lines.Add("- Thresholds: ``$ThresholdsPath``")
-        $lines.Add("- Generated (UTC): $((Get-Date).ToUniversalTime().ToString('u'))")
-        $lines.Add("")
-        $lines.Add($summary)
-        $lines.Add("")
-        $lines.Add("To enable regression comparison, run ``Capture-Baseline.ps1`` on this machine and commit or make available the resulting snapshot.")
-        Set-Content -Path $ReportPath -Value $lines -Encoding UTF8
-        Write-Host "Report written to $ReportPath"
-    }
-
-    return
-}
-
 $defaults = Get-OptionalProperty -Object $config -Name "defaults" -DefaultValue $null
 $defaultMeanRegression = [double](Get-OptionalProperty -Object $defaults -Name "maxMeanRegressionPercent" -DefaultValue 8.0)
 $defaultAllocRegressionPct = [double](Get-OptionalProperty -Object $defaults -Name "maxAllocRegressionPercent" -DefaultValue 10.0)
 $defaultAllocRegressionBytes = [double](Get-OptionalProperty -Object $defaults -Name "maxAllocRegressionBytes" -DefaultValue 256.0)
 
-$currentMachineFingerprint = Get-MachineFingerprint
+$currentMachineFingerprint = $currentManifest.machine
+Assert-PerfMachineFingerprint $currentMachineFingerprint
 $baselineMachineFingerprintCache = @{}
+$snapshotManifestCache = @{}
 $machineCompatibilityCache = @{}
 $results = New-Object System.Collections.Generic.List[object]
 $failureCount = 0
+$enforceableCount = 0
 
 foreach ($check in $config.checks)
 {
     $csvName = [string]$check.csv
+    $checkEnforceableCount = 0
+    $minimumEnforceableComparisons = [int](Get-OptionalProperty $check 'minimumEnforceableComparisons' 1)
+    if ($minimumEnforceableComparisons -le 0) { throw "Check '$csvName' requires a positive minimumEnforceableComparisons." }
     $keyColumns = @($check.keyColumns)
     if ($keyColumns.Count -eq 0)
     {
@@ -953,7 +819,7 @@ foreach ($check in $config.checks)
 
     $checkBaselineSnapshot = [string](Get-OptionalProperty -Object $check -Name "baselineSnapshot" -DefaultValue "")
     $checkBaselineSnapshotDir = $baselineSnapshotDir
-    if (-not [string]::IsNullOrWhiteSpace($checkBaselineSnapshot))
+    if (-not $explicitBaseline -and -not [string]::IsNullOrWhiteSpace($checkBaselineSnapshot))
     {
         $checkBaselineSnapshotPath = $checkBaselineSnapshot
         if (-not [System.IO.Path]::IsPathRooted($checkBaselineSnapshotPath))
@@ -967,7 +833,7 @@ foreach ($check in $config.checks)
                 -Csv $csvName `
                 -Key "<missing baseline snapshot>" `
                 -Enforcement "Strict" `
-                -Status "FAIL" `
+                -Status "INVALID" `
                 -Notes "Baseline snapshot missing: $checkBaselineSnapshotPath"
             $failureCount++
             continue
@@ -981,7 +847,7 @@ foreach ($check in $config.checks)
             -Csv $csvName `
             -Key "<missing global baseline snapshot>" `
             -Enforcement "Strict" `
-            -Status "FAIL" `
+            -Status "INVALID" `
             -Notes "Global baseline snapshot missing for check without baselineSnapshot override"
         $failureCount++
         continue
@@ -989,7 +855,11 @@ foreach ($check in $config.checks)
 
     if (-not $baselineMachineFingerprintCache.ContainsKey($checkBaselineSnapshotDir))
     {
+        $snapshotManifestCache[$checkBaselineSnapshotDir] = Assert-PerfSnapshot $checkBaselineSnapshotDir
         $baselineMachineFingerprintCache[$checkBaselineSnapshotDir] = Get-SnapshotMachineFingerprint -SnapshotDir $checkBaselineSnapshotDir
+        if ($null -ne $currentManifest -and $snapshotManifestCache[$checkBaselineSnapshotDir].harnessIdentity -cne $currentManifest.harnessIdentity) {
+            throw "Base/head harness identity mismatch for $csvName."
+        }
     }
 
     if (-not $machineCompatibilityCache.ContainsKey($checkBaselineSnapshotDir))
@@ -1011,6 +881,10 @@ foreach ($check in $config.checks)
     }
 
     $machineCompatibility = $machineCompatibilityCache[$checkBaselineSnapshotDir]
+    if ($null -ne $currentManifest -and
+        ($snapshotManifestCache[$checkBaselineSnapshotDir].runtime | ConvertTo-Json -Compress) -cne ($currentManifest.runtime | ConvertTo-Json -Compress)) {
+        throw "Base/head runtime identity mismatch for $csvName."
+    }
 
     $baselineSubDir = [string](Get-OptionalProperty -Object $check -Name "baselineSubDir" -DefaultValue "micro-results")
     $checkBaselineResultsDir = Join-Path $checkBaselineSnapshotDir $baselineSubDir
@@ -1020,7 +894,7 @@ foreach ($check in $config.checks)
             -Csv $csvName `
             -Key "<missing baseline results directory>" `
             -Enforcement $machineCompatibility.Summary `
-            -Status "FAIL" `
+            -Status "INVALID" `
             -Notes "Baseline results directory missing: $checkBaselineResultsDir"
         $failureCount++
         continue
@@ -1028,7 +902,11 @@ foreach ($check in $config.checks)
 
     $configuredCurrentResultsDir = [string](Get-OptionalProperty -Object $check -Name "currentResultsDir" -DefaultValue "")
     $checkCurrentResultsDir =
-    if ([string]::IsNullOrWhiteSpace($configuredCurrentResultsDir))
+    if ($null -ne $currentManifest)
+    {
+        Join-Path $CurrentSnapshot $baselineSubDir
+    }
+    elseif ([string]::IsNullOrWhiteSpace($configuredCurrentResultsDir))
     {
         $resolvedDefaultCurrentResultsDir
     }
@@ -1043,7 +921,7 @@ foreach ($check in $config.checks)
             -Csv $csvName `
             -Key "<missing current results directory>" `
             -Enforcement $machineCompatibility.Summary `
-            -Status "FAIL" `
+            -Status "INVALID" `
             -Notes "Current results directory missing: $checkCurrentResultsDir"
         $failureCount++
         continue
@@ -1051,6 +929,8 @@ foreach ($check in $config.checks)
 
     $baselineFile = Join-Path $checkBaselineResultsDir $csvName
     $currentFile = Join-Path $checkCurrentResultsDir $csvName
+    Assert-PerfSnapshotCsv -Manifest $snapshotManifestCache[$checkBaselineSnapshotDir] -SnapshotDir $checkBaselineSnapshotDir -CsvPath $baselineFile
+    if ($null -ne $currentManifest) { Assert-PerfSnapshotCsv -Manifest $currentManifest -SnapshotDir $CurrentSnapshot -CsvPath $currentFile }
 
     if (-not (Test-Path $baselineFile))
     {
@@ -1058,7 +938,7 @@ foreach ($check in $config.checks)
             -Csv $csvName `
             -Key "<missing baseline file>" `
             -Enforcement $machineCompatibility.Summary `
-            -Status "FAIL" `
+            -Status "INVALID" `
             -Notes "Baseline CSV missing"
         $failureCount++
         continue
@@ -1070,14 +950,24 @@ foreach ($check in $config.checks)
             -Csv $csvName `
             -Key "<missing current file>" `
             -Enforcement $machineCompatibility.Summary `
-            -Status "FAIL" `
+            -Status "INVALID" `
             -Notes "Current CSV missing"
         $failureCount++
         continue
     }
 
-    $baselineRows = Import-Csv -Path $baselineFile
-    $currentRows = Import-Csv -Path $currentFile
+    $baselineRows = @(Import-Csv -Path $baselineFile)
+    $currentRows = @(Import-Csv -Path $currentFile)
+    if ($baselineRows.Count -eq 0 -or $currentRows.Count -eq 0) { throw "Zero rows in baseline or current CSV: $csvName" }
+    foreach ($rows in @(@{ label = 'baseline'; rows = $baselineRows }, @{ label = 'current'; rows = $currentRows })) {
+        $keys = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+        foreach ($row in $rows.rows) {
+            foreach ($column in $keyColumns) {
+                if ([string]::IsNullOrWhiteSpace([string](Get-OptionalProperty $row $column ''))) { throw "Missing key column $column in $($rows.label) $csvName." }
+            }
+            if (-not $keys.Add((Build-RowKey $row $keyColumns))) { throw "Duplicate row in $($rows.label) $csvName." }
+        }
+    }
 
     $requiredCurrentRows = Get-OptionalProperty -Object $check -Name "requiredCurrentRows" -DefaultValue @()
     foreach ($requiredCurrent in @($requiredCurrentRows))
@@ -1098,13 +988,16 @@ foreach ($check in $config.checks)
                 -Csv $csvName `
                 -Key $requiredCurrentKey `
                 -Enforcement $machineCompatibility.Summary `
-                -Status "FAIL" `
+                -Status "INVALID" `
                 -Notes "Required current row missing"
             $failureCount++
             continue
         }
 
         $currentOnlyExtraInfoChecks = Get-OptionalProperty -Object $requiredCurrent -Name "extraInfoChecks" -DefaultValue @()
+        $currentOnlyMetric = [string](Get-OptionalProperty $check 'metricColumn' 'Mean')
+        $currentOnlyValue = Convert-TimeToNanoseconds ([string](Get-OptionalProperty $currentMatch $currentOnlyMetric ''))
+        if ($currentOnlyValue -le 0 -or -not [double]::IsFinite($currentOnlyValue)) { throw "Invalid numeric $currentOnlyMetric in required current row $requiredCurrentKey." }
         $currentOnlyExtraInfoEvaluation = Test-CurrentExtraInfoChecks -CurrentRow $currentMatch -Checks $currentOnlyExtraInfoChecks
         $currentOnlyStatus =
         if ($machineCompatibility.Classification -eq "different")
@@ -1149,6 +1042,11 @@ foreach ($check in $config.checks)
     $requiredRows = Get-OptionalProperty -Object $check -Name "requiredRows" -DefaultValue $null
     if ($null -eq $requiredRows)
     {
+        # Full-table checks require identical key sets, including head-only rows.
+        $baselineKeys = @($baselineRows | ForEach-Object { Build-RowKey $_ $keyColumns })
+        foreach ($row in $currentRows) {
+            if ((Build-RowKey $row $keyColumns) -cnotin $baselineKeys) { throw "Row missing in baseline results: $csvName / $(Build-RowKey $row $keyColumns)" }
+        }
         foreach ($row in $baselineRows)
         {
             $rowsToCompare.Add($row)
@@ -1165,7 +1063,7 @@ foreach ($check in $config.checks)
                     -Csv $csvName `
                     -Key (Build-RowKey -Row $required -KeyColumns @($required.PSObject.Properties.Name)) `
                     -Enforcement $machineCompatibility.Summary `
-                    -Status "FAIL" `
+                    -Status "INVALID" `
                     -Notes "Required row missing in baseline"
                 $failureCount++
                 continue
@@ -1241,7 +1139,7 @@ foreach ($check in $config.checks)
                 -BaselineMean ([string](Get-OptionalProperty -Object $baselineRow -Name $metricColumn -DefaultValue "")) `
                 -BaselineAlloc ([string](Get-OptionalProperty -Object $baselineRow -Name "Allocated" -DefaultValue "")) `
                 -Enforcement $machineCompatibility.Summary `
-                -Status "FAIL" `
+                -Status "INVALID" `
                 -Notes "Row missing in current results"
             $failureCount++
             continue
@@ -1260,7 +1158,7 @@ foreach ($check in $config.checks)
                 -BaselineAlloc ([string](Get-OptionalProperty -Object $baselineRow -Name "Allocated" -DefaultValue "")) `
                 -CurrentAlloc ([string](Get-OptionalProperty -Object $currentRow -Name "Allocated" -DefaultValue "")) `
                 -Enforcement $machineCompatibility.Summary `
-                -Status "FAIL" `
+                -Status "INVALID" `
                 -Notes "Benchmark did not produce a numeric $metricColumn value"
             $failureCount++
             continue
@@ -1268,6 +1166,7 @@ foreach ($check in $config.checks)
 
         $baselineMeanNs = Convert-TimeToNanoseconds -Value $baselineMeanRaw
         $currentMeanNs = Convert-TimeToNanoseconds -Value $currentMeanRaw
+        if ($baselineMeanNs -le 0 -or $currentMeanNs -le 0 -or -not [double]::IsFinite($baselineMeanNs) -or -not [double]::IsFinite($currentMeanNs)) { throw "Invalid numeric $metricColumn in $csvName / $rowKey." }
         $meanDeltaPct = (($currentMeanNs - $baselineMeanNs) / $baselineMeanNs) * 100.0
 
         $baselineAlloc = [string](Get-OptionalProperty -Object $baselineRow -Name "Allocated" -DefaultValue "")
@@ -1285,7 +1184,7 @@ foreach ($check in $config.checks)
                 -BaselineAlloc $baselineAlloc `
                 -CurrentAlloc $currentAlloc `
                 -Enforcement $machineCompatibility.Summary `
-                -Status "FAIL" `
+                -Status "INVALID" `
                 -Notes "Allocation column missing; set skipAllocationComparison=true for this check if alloc should not be compared"
             $failureCount++
             continue
@@ -1302,7 +1201,7 @@ foreach ($check in $config.checks)
                 -BaselineAlloc $baselineAlloc `
                 -CurrentAlloc $currentAlloc `
                 -Enforcement $machineCompatibility.Summary `
-                -Status "FAIL" `
+                -Status "INVALID" `
                 -Notes "Benchmark did not produce a numeric Allocated value; set skipAllocationComparison=true for this check if alloc should not be compared"
             $failureCount++
             continue
@@ -1312,6 +1211,7 @@ foreach ($check in $config.checks)
         {
             $baselineAllocBytes = Convert-SizeToBytes -Value $baselineAlloc
             $currentAllocBytes = Convert-SizeToBytes -Value $currentAlloc
+            if (-not [double]::IsFinite($baselineAllocBytes) -or -not [double]::IsFinite($currentAllocBytes)) { throw "Invalid numeric allocation in $csvName / $rowKey." }
             $allocDeltaBytes = $currentAllocBytes - $baselineAllocBytes
             $allocDeltaPct =
             if ($baselineAllocBytes -eq 0.0)
@@ -1332,6 +1232,12 @@ foreach ($check in $config.checks)
         }
 
         $extraInfoEvaluation = Test-ExtraInfoChecks -BaselineRow $baselineRow -CurrentRow $currentRow -Checks $extraInfoChecks
+        $hasMetric = (-not $skipMeanComparison) -or $allocComparisonEnabled -or @($extraInfoChecks).Count -gt 0
+        if (-not $hasMetric) { throw "Check '$csvName' has no comparison metrics for $rowKey." }
+        if ($machineCompatibility.Enforcement -eq 'strict') {
+            $checkEnforceableCount++
+            $enforceableCount++
+        }
 
         $meanRegressed = (-not $skipMeanComparison) -and ($meanDeltaPct -gt $maxMeanRegression)
         $allocRegressed = $allocComparisonEnabled -and
@@ -1395,13 +1301,18 @@ foreach ($check in $config.checks)
             -Status $status `
             -Notes $machineNote
     }
+    if ($checkEnforceableCount -lt [Math]::Max($minimumEnforceableComparisons, $rowsToCompare.Count)) {
+        Add-ComparisonResult -Results $results -Csv $csvName -Key '<comparison coverage>' -Enforcement 'Strict' -Status 'INVALID' -Notes "Insufficient enforceable comparisons: $checkEnforceableCount. Every selected baseline row and at least $minimumEnforceableComparisons comparison(s) are required."
+    }
 }
 
+$failureCount = @($results | Where-Object Status -eq "FAIL").Count
 $passCount = @($results | Where-Object Status -eq "PASS").Count
 $warnCount = @($results | Where-Object Status -eq "WARN").Count
 $skipCount = @($results | Where-Object Status -eq "SKIP").Count
 $rowCount = $results.Count
-$summary = "Compared $rowCount rows against baseline. PASS=$passCount, WARN=$warnCount, SKIP=$skipCount, FAIL=$failureCount"
+$integrityFailureCount = @($results | Where-Object Status -eq 'INVALID').Count
+$summary = "Compared $rowCount rows against baseline. PASS=$passCount, WARN=$warnCount, SKIP=$skipCount, FAIL=$failureCount, INVALID=$integrityFailureCount, ENFORCEABLE=$enforceableCount"
 Write-Host $summary
 $results | Sort-Object Csv, Key | Format-Table Csv, Key, Metric, MeanDeltaPct, AllocDeltaPct, AllocDeltaBytes, Enforcement, Status -AutoSize
 
@@ -1430,7 +1341,7 @@ if (-not [string]::IsNullOrWhiteSpace($ReportPath))
     $lines.Add("- Thresholds: ``$ThresholdsPath``")
     $lines.Add("- Generated (UTC): $((Get-Date).ToUniversalTime().ToString('u'))")
     $lines.Add("- Current machine: ``$(Format-MachineSummary -Fingerprint $currentMachineFingerprint)``")
-    $lines.Add("- Machine policy: strict on matching perf runner or same-machine fingerprint; warn on compatible hardware/runtime; skip on materially different machines")
+    $lines.Add("- Machine policy: identical captured runtimes required; strict on matching perf runner or same-machine fingerprint; compatible/different machines cannot satisfy comparison coverage")
     $lines.Add("")
     $lines.Add($summary)
     $lines.Add("")
@@ -1444,9 +1355,13 @@ if (-not [string]::IsNullOrWhiteSpace($ReportPath))
     }
 
     Set-Content -Path $ReportPath -Value $lines -Encoding UTF8
+    $reportWritten = $true
     Write-Host "Report written to $ReportPath"
 }
 
+if ($integrityFailureCount -gt 0 -or $enforceableCount -eq 0) {
+    throw "Performance evidence integrity failed: INVALID=$integrityFailureCount, ENFORCEABLE=$enforceableCount. Report mode suppresses timing regressions only."
+}
 if ($failureCount -gt 0 -and -not $NoFailOnRegression.IsPresent)
 {
     throw "Performance guardrail violations detected: $failureCount"

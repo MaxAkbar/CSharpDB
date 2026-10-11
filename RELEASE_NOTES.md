@@ -1,47 +1,45 @@
 # What's New
 
-## CSharpDB 4.6.5
+## CSharpDB 4.6.6
 
-CSharpDB 4.6.5 adds a Privacy & Retention workflow in Studio, opens the
-Storage Inspector without an initial full-file scan, and improves SQL editor
-completion and storage write paths. These notes cover changes since v4.6.4.
+CSharpDB 4.6.6 improves durable write throughput, prepared queries, and bounded
+primary-key reads while strengthening reader snapshot, buffered-row, and concurrent
+WAL-read correctness.
+These notes cover changes since v4.6.5.
 
-### Privacy & Retention
+### Query and write improvements
 
-- Create and save reusable policies that select records with typed conditions,
-  date rules, and explicitly mapped related records. Search, duplicate, import,
-  and export policies in **Data Hygiene → Privacy & Retention**.
-- Choose fields to erase, replace with a constant or stable anonymous value, or
-  partially mask. Preview eligible records, changed counts, preserved fields,
-  warnings, and bounded before/after samples before applying a policy.
-- Apply a prepared policy in one transaction with bounded batches and
-  cancellation before commit. Review committed run receipts and reconcile an
-  uncertain commit outcome before retrying.
-- Protect keys and relationship columns, reject unsupported constraints or
-  mutation callbacks during preparation, and keep records and their declared
-  relationships intact.
+- Reuse prepared SELECT plans across parameter values and support bounded integer
+  primary-key ranges through pooled readers and ordinary queries.
+- Preserve reader catalog snapshots across commits and checkpoints, including
+  schema metadata used by existing readers.
+- Reduce table-scan, LIMIT, snapshot-pager, and leaf-prefetch allocations. Forward
+  intact row batches while preserving ownership and mixed row/batch traversal.
+- Streamline primary-key mutations and INSERT execution by reusing column ordinals,
+  avoiding per-row observer allocations, and skipping redundant canonical value
+  conversions.
+- Reduce durable-write checkpoint stalls and improve WAL/checkpoint lifecycle
+  handling and storage-page ownership.
 
-### Studio and storage improvements
+### Storage correctness
 
-- Open Storage Inspector with a persisted summary. Full page and WAL analysis
-  now starts only when **Analyze storage** is requested, with cancellation.
-- Restore context-aware SQL editor suggestions for tables, columns, and
-  keywords, and expand the supported keyword completion set.
-- Reuse WAL snapshot segments and share immutable snapshot maps to reduce
-  copying during concurrent reads. Streamline simple INSERT execution and
-  checkpoint storage paths.
-- Refresh the .NET SDK and selected runtime, tooling, and test dependencies.
+- Prevent checkpoint reset or retained-tail compaction from invalidating WAL
+  offsets used during write-conflict resolution. This fixes a concurrency race
+  that could cause short WAL reads or return incorrect page contents.
+- Defer checkpoint finalization while durable commits still have unpublished WAL
+  offsets, preserving correct reads after those commits complete.
+- Add deterministic regression coverage for reset and compaction, including stale
+  offsets that remain within file bounds, cancellation, lock release, and forward
+  progress. The database and WAL formats are unchanged.
 
-### Compatibility and scope
+### Dependencies and maintenance
 
-- No database file-format revision is introduced by these changes.
-- The initial Privacy & Retention workflow supports a single standard
-  file-backed direct database, including durable hybrid storage. Remote,
-  sharded, memory-only, and snapshot-only hybrid execution are outside its
-  scope. It changes selected live fields; it does not delete records, discover
-  unselected personal-data copies, or establish that a person is unidentifiable.
-- Privacy runs require an exclusive writable file session. Other writable
-  handles can prevent preparation or apply from starting. Review the policy,
-  preview, and run outcome before retrying a failed or uncertain operation.
-- Storage analysis remains an explicit potentially long-running operation.
-  The initial summary does not include results of a full integrity scan.
+- Update gRPC/Protobuf, SQL Server migration dependencies, WebView2, OpenTelemetry,
+  Scalar, and test tooling.
+- Retain Microsoft.OpenApi 2.12.0 for compatibility with
+  Microsoft.AspNetCore.OpenApi 10.0.12 on .NET 10.
+
+### Performance guardrails
+
+- Validate performance evidence integrity and reject incomplete or inconsistent
+  comparison evidence.

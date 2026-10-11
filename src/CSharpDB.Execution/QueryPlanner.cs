@@ -681,21 +681,37 @@ public sealed partial class QueryPlanner
     private const int MaxTriggerDepth = 16;
     private const int MaxForeignKeyCascadeDepth = 64;
 
+    // Short-lived reader planners allocate only the caches their queries use.
+    // Cleanup accesses the backing fields so it never creates an unused cache.
     /// <summary>Cache of parsed trigger bodies to avoid re-parsing on every row.</summary>
-    private readonly Dictionary<string, List<Statement>> _triggerBodyCache = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, long> _nextRowIdCache = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, RowIdReservationLease> _rowIdReservationLeases = new(StringComparer.OrdinalIgnoreCase);
-    private readonly HashSet<string> _dirtyNextRowIdTables = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<CompiledExpressionCacheKey, Func<DbValue[], DbValue>> _compiledExpressionCache = new();
-    private readonly Dictionary<CompiledExpressionCacheKey, SpanExpressionEvaluator> _compiledSpanExpressionCache = new();
-    private readonly Dictionary<TableSchema, string> _qualifiedMappingFingerprintCache = new(ReferenceEqualityComparer.Instance);
-    private readonly Dictionary<TableSchema, Dictionary<string, LogicalMutationConflictMetadata>> _logicalMutationConflictMetadataCache = new(ReferenceEqualityComparer.Instance);
-    private readonly Dictionary<TableSchema, ColumnDefinition[]> _tableSchemaArrayCache = new(ReferenceEqualityComparer.Instance);
-    private readonly Dictionary<(TableSchema Schema, int ColumnIndex), ColumnDefinition[]> _singleColumnOutputSchemaCache = new();
-    private readonly Dictionary<TableSchema, ResolvedInsertIndexPlanSet> _resolvedInsertIndexPlanCache = new(ReferenceEqualityComparer.Instance);
-    private readonly Dictionary<Expression, bool> _requiresQualifiedMappingCache = new(ReferenceEqualityComparer.Instance);
-    private readonly Dictionary<TableRef, TableSchema> _correlationTableRefSchemaCache = new(ReferenceEqualityComparer.Instance);
-    private readonly Dictionary<QueryStatement, ColumnDefinition[]> _correlationQueryOutputSchemaCache = new(ReferenceEqualityComparer.Instance);
+    private Dictionary<string, List<Statement>>? _triggerBodyCache;
+    private Dictionary<string, List<Statement>> TriggerBodyCache => _triggerBodyCache ??= new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, long>? _nextRowIdCache;
+    private Dictionary<string, long> NextRowIdCache => _nextRowIdCache ??= new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, RowIdReservationLease>? _rowIdReservationLeases;
+    private Dictionary<string, RowIdReservationLease> RowIdReservationLeases => _rowIdReservationLeases ??= new(StringComparer.OrdinalIgnoreCase);
+    private HashSet<string>? _dirtyNextRowIdTables;
+    private HashSet<string> DirtyNextRowIdTables => _dirtyNextRowIdTables ??= new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<CompiledExpressionCacheKey, Func<DbValue[], DbValue>>? _compiledExpressionCache;
+    private Dictionary<CompiledExpressionCacheKey, Func<DbValue[], DbValue>> CompiledExpressionCache => _compiledExpressionCache ??= new();
+    private Dictionary<CompiledExpressionCacheKey, SpanExpressionEvaluator>? _compiledSpanExpressionCache;
+    private Dictionary<CompiledExpressionCacheKey, SpanExpressionEvaluator> CompiledSpanExpressionCache => _compiledSpanExpressionCache ??= new();
+    private Dictionary<TableSchema, string>? _qualifiedMappingFingerprintCache;
+    private Dictionary<TableSchema, string> QualifiedMappingFingerprintCache => _qualifiedMappingFingerprintCache ??= new(ReferenceEqualityComparer.Instance);
+    private Dictionary<TableSchema, Dictionary<string, LogicalMutationConflictMetadata>>? _logicalMutationConflictMetadataCache;
+    private Dictionary<TableSchema, Dictionary<string, LogicalMutationConflictMetadata>> LogicalMutationConflictMetadataCache => _logicalMutationConflictMetadataCache ??= new(ReferenceEqualityComparer.Instance);
+    private Dictionary<TableSchema, ColumnDefinition[]>? _tableSchemaArrayCache;
+    private Dictionary<TableSchema, ColumnDefinition[]> TableSchemaArrayCache => _tableSchemaArrayCache ??= new(ReferenceEqualityComparer.Instance);
+    private Dictionary<(TableSchema Schema, int ColumnIndex), ColumnDefinition[]>? _singleColumnOutputSchemaCache;
+    private Dictionary<(TableSchema Schema, int ColumnIndex), ColumnDefinition[]> SingleColumnOutputSchemaCache => _singleColumnOutputSchemaCache ??= new();
+    private Dictionary<TableSchema, ResolvedInsertIndexPlanSet>? _resolvedInsertIndexPlanCache;
+    private Dictionary<TableSchema, ResolvedInsertIndexPlanSet> ResolvedInsertIndexPlanCache => _resolvedInsertIndexPlanCache ??= new(ReferenceEqualityComparer.Instance);
+    private Dictionary<Expression, bool>? _requiresQualifiedMappingCache;
+    private Dictionary<Expression, bool> RequiresQualifiedMappingCache => _requiresQualifiedMappingCache ??= new(ReferenceEqualityComparer.Instance);
+    private Dictionary<TableRef, TableSchema>? _correlationTableRefSchemaCache;
+    private Dictionary<TableRef, TableSchema> CorrelationTableRefSchemaCache => _correlationTableRefSchemaCache ??= new(ReferenceEqualityComparer.Instance);
+    private Dictionary<QueryStatement, ColumnDefinition[]>? _correlationQueryOutputSchemaCache;
+    private Dictionary<QueryStatement, ColumnDefinition[]> CorrelationQueryOutputSchemaCache => _correlationQueryOutputSchemaCache ??= new(ReferenceEqualityComparer.Instance);
     private List<DbValue[]>? _systemTablesRowsCache;
     private List<DbValue[]>? _systemInternalTablesRowsCache;
     private List<DbValue[]>? _systemColumnsRowsCache;
@@ -711,11 +727,16 @@ public sealed partial class QueryPlanner
     private long? _systemColumnsCountCache;
     private long? _systemIndexesCountCache;
     private long? _systemForeignKeysCountCache;
-    private readonly Dictionary<string, TableSchema> _systemCatalogSchemaCache = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<SelectStatement, SelectPlanKind> _selectPlanCache = new(ReferenceEqualityComparer.Instance);
-    private readonly Dictionary<SelectStatement, CachedSelectBatchPlans> _selectBatchPlanCache = new(ReferenceEqualityComparer.Instance);
-    private readonly Dictionary<SelectStatement, CachedSelectJoinReorder> _selectJoinReorderCache = new(ReferenceEqualityComparer.Instance);
-    private readonly Queue<SelectStatement> _selectPlanInsertionOrder = new();
+    private Dictionary<string, TableSchema>? _systemCatalogSchemaCache;
+    private Dictionary<string, TableSchema> SystemCatalogSchemaCache => _systemCatalogSchemaCache ??= new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<SelectStatement, SelectPlanKind>? _selectPlanCache;
+    private Dictionary<SelectStatement, SelectPlanKind> SelectPlanCache => _selectPlanCache ??= new(ReferenceEqualityComparer.Instance);
+    private Dictionary<SelectStatement, CachedSelectBatchPlans>? _selectBatchPlanCache;
+    private Dictionary<SelectStatement, CachedSelectBatchPlans> SelectBatchPlanCache => _selectBatchPlanCache ??= new(ReferenceEqualityComparer.Instance);
+    private Dictionary<SelectStatement, CachedSelectJoinReorder>? _selectJoinReorderCache;
+    private Dictionary<SelectStatement, CachedSelectJoinReorder> SelectJoinReorderCache => _selectJoinReorderCache ??= new(ReferenceEqualityComparer.Instance);
+    private Queue<SelectStatement>? _selectPlanInsertionOrder;
+    private Queue<SelectStatement> SelectPlanInsertionOrder => _selectPlanInsertionOrder ??= new();
     private long _selectPlanCacheHitCount;
     private long _selectPlanCacheMissCount;
     private long _selectPlanCacheReclassificationCount;
@@ -740,7 +761,18 @@ public sealed partial class QueryPlanner
     private readonly Action<string, long>? _nextRowIdObservationProvider;
     private readonly Func<ulong, ulong>? _rowVersionAllocator;
     private readonly bool _useTransientNextRowIdHints;
-    private readonly AdaptiveQueryReoptimizationRuntimeDiagnostics _adaptiveRuntimeDiagnostics;
+    private AdaptiveQueryReoptimizationRuntimeDiagnostics? _adaptiveRuntimeDiagnostics;
+    private IQueryPlanRuntimeObserver? _planRuntimeObserver;
+    private AdaptiveQueryReoptimizationRuntimeDiagnostics AdaptiveRuntimeDiagnostics
+        => _adaptiveRuntimeDiagnostics ??= new AdaptiveQueryReoptimizationRuntimeDiagnostics(
+            RecordAdaptiveAttempt,
+            RecordAdaptiveSuccessfulSwitch,
+            RecordAdaptiveRejectedSwitch,
+            RecordAdaptiveDivergence,
+            RecordAdaptiveBufferedRows)
+        {
+            RuntimeObserver = PlanRuntimeObserver,
+        };
 
     private const int MaxCompiledExpressionCacheEntries = 4096;
     private const int MaxSelectPlanCacheEntries = 1024;
@@ -893,8 +925,13 @@ public sealed partial class QueryPlanner
     /// </summary>
     internal IQueryPlanRuntimeObserver? PlanRuntimeObserver
     {
-        get => _adaptiveRuntimeDiagnostics.RuntimeObserver;
-        set => _adaptiveRuntimeDiagnostics.RuntimeObserver = value;
+        get => Volatile.Read(ref _planRuntimeObserver);
+        set
+        {
+            Volatile.Write(ref _planRuntimeObserver, value);
+            if (_adaptiveRuntimeDiagnostics is { } diagnostics)
+                diagnostics.RuntimeObserver = value;
+        }
     }
 
     public QueryPlanner(
@@ -967,26 +1004,21 @@ public sealed partial class QueryPlanner
         _useTransientNextRowIdHints = useTransientNextRowIdHints;
         AdaptiveQueryReoptimization = NormalizeAdaptiveQueryReoptimizationOptions(adaptiveQueryReoptimization);
         WindowExecution = NormalizeWindowExecutionOptions(windowExecution);
-        _adaptiveRuntimeDiagnostics = new AdaptiveQueryReoptimizationRuntimeDiagnostics(
-            RecordAdaptiveAttempt,
-            RecordAdaptiveSuccessfulSwitch,
-            RecordAdaptiveRejectedSwitch,
-            RecordAdaptiveDivergence,
-            RecordAdaptiveBufferedRows);
     }
 
     public IReadOnlyCollection<KeyValuePair<string, long>> GetCommittedNextRowIdHints()
     {
-        if (_dirtyNextRowIdTables.Count == 0)
+        if (_dirtyNextRowIdTables is not { Count: > 0 } dirtyTables)
             return Array.Empty<KeyValuePair<string, long>>();
 
-        var committed = new List<KeyValuePair<string, long>>(_dirtyNextRowIdTables.Count);
-        foreach (string tableName in _dirtyNextRowIdTables)
+        var committed = new List<KeyValuePair<string, long>>(dirtyTables.Count);
+        foreach (string tableName in dirtyTables)
         {
             if (IsTemporaryTable(tableName))
                 continue;
 
-            if (_nextRowIdCache.TryGetValue(tableName, out long nextRowId) && nextRowId > 0)
+            if (_nextRowIdCache is { } nextRowIds &&
+                nextRowIds.TryGetValue(tableName, out long nextRowId) && nextRowId > 0)
                 committed.Add(new KeyValuePair<string, long>(tableName, nextRowId));
         }
 
@@ -1195,6 +1227,9 @@ public sealed partial class QueryPlanner
         CancellationToken ct,
         bool suppressAdaptiveReoptimization = false)
     {
+        if (stmt is PreparedSelectStatement prepared)
+            return ValueTask.FromResult(ExecutePreparedSelect(prepared));
+
         WindowExpressionSupport.ValidateQuery(stmt);
         ValidateStarAggregateProjection(stmt);
 
@@ -1267,7 +1302,7 @@ public sealed partial class QueryPlanner
             _selectPlanCacheMissCount,
             _selectPlanCacheReclassificationCount,
             _selectPlanCacheStoreCount,
-            _selectPlanCache.Count);
+            (_selectPlanCache?.Count ?? 0) + (_preparedSelectPlans?.Count ?? 0));
 
     internal void ResetSelectPlanCacheDiagnostics()
     {
@@ -1404,17 +1439,17 @@ public sealed partial class QueryPlanner
         if (currentVersion == _observedSchemaVersion)
             return;
 
-        _triggerBodyCache.Clear();
-        _nextRowIdCache.Clear();
-        _rowIdReservationLeases.Clear();
-        _dirtyNextRowIdTables.Clear();
-        _compiledExpressionCache.Clear();
-        _compiledSpanExpressionCache.Clear();
-        _qualifiedMappingFingerprintCache.Clear();
-        _tableSchemaArrayCache.Clear();
-        _singleColumnOutputSchemaCache.Clear();
-        _resolvedInsertIndexPlanCache.Clear();
-        _requiresQualifiedMappingCache.Clear();
+        _triggerBodyCache?.Clear();
+        _nextRowIdCache?.Clear();
+        _rowIdReservationLeases?.Clear();
+        _dirtyNextRowIdTables?.Clear();
+        _compiledExpressionCache?.Clear();
+        _compiledSpanExpressionCache?.Clear();
+        _qualifiedMappingFingerprintCache?.Clear();
+        _tableSchemaArrayCache?.Clear();
+        _singleColumnOutputSchemaCache?.Clear();
+        _resolvedInsertIndexPlanCache?.Clear();
+        _requiresQualifiedMappingCache?.Clear();
         _systemTablesRowsCache = null;
         _systemInternalTablesRowsCache = null;
         _systemColumnsRowsCache = null;
@@ -1430,10 +1465,11 @@ public sealed partial class QueryPlanner
         _systemColumnsCountCache = null;
         _systemIndexesCountCache = null;
         _systemForeignKeysCountCache = null;
-        _selectPlanCache.Clear();
-        _selectBatchPlanCache.Clear();
-        _selectJoinReorderCache.Clear();
-        _selectPlanInsertionOrder.Clear();
+        _selectPlanCache?.Clear();
+        ClearPreparedSelectPlans();
+        _selectBatchPlanCache?.Clear();
+        _selectJoinReorderCache?.Clear();
+        _selectPlanInsertionOrder?.Clear();
 
         _observedSchemaVersion = currentVersion;
     }
@@ -1537,9 +1573,9 @@ public sealed partial class QueryPlanner
             await CreateKeyConstraintBackingIndexAsync(schema, keyConstraints[i], ct);
         for (int i = 0; i < foreignKeys.Length; i++)
             await CreateForeignKeySupportIndexAsync(schema, foreignKeys[i], ct);
-        _nextRowIdCache.Remove(stmt.TableName);
-        _rowIdReservationLeases.Remove(stmt.TableName);
-        _dirtyNextRowIdTables.Remove(stmt.TableName);
+        _nextRowIdCache?.Remove(stmt.TableName);
+        _rowIdReservationLeases?.Remove(stmt.TableName);
+        _dirtyNextRowIdTables?.Remove(stmt.TableName);
         return new QueryResult(0);
     }
 
@@ -1590,9 +1626,9 @@ public sealed partial class QueryPlanner
         RowConstraintValidator.ValidateSchemaDefinitions(schema);
 
         await temporaryTables.CreateTableAsync(schema, ct);
-        _nextRowIdCache.Remove(stmt.TableName);
-        _rowIdReservationLeases.Remove(stmt.TableName);
-        _dirtyNextRowIdTables.Remove(stmt.TableName);
+        _nextRowIdCache?.Remove(stmt.TableName);
+        _rowIdReservationLeases?.Remove(stmt.TableName);
+        _dirtyNextRowIdTables?.Remove(stmt.TableName);
         InvalidateTempSystemCatalogCaches();
         return new QueryResult(0);
     }
@@ -1694,9 +1730,9 @@ public sealed partial class QueryPlanner
         }
 
         await _catalog.DropTableAsync(stmt.TableName, ct);
-        _nextRowIdCache.Remove(stmt.TableName);
-        _rowIdReservationLeases.Remove(stmt.TableName);
-        _dirtyNextRowIdTables.Remove(stmt.TableName);
+        _nextRowIdCache?.Remove(stmt.TableName);
+        _rowIdReservationLeases?.Remove(stmt.TableName);
+        _dirtyNextRowIdTables?.Remove(stmt.TableName);
         return new QueryResult(0);
     }
 
@@ -1712,9 +1748,9 @@ public sealed partial class QueryPlanner
         }
 
         await temporaryTables.DropTableAsync(stmt.TableName, ct);
-        _nextRowIdCache.Remove(stmt.TableName);
-        _rowIdReservationLeases.Remove(stmt.TableName);
-        _dirtyNextRowIdTables.Remove(stmt.TableName);
+        _nextRowIdCache?.Remove(stmt.TableName);
+        _rowIdReservationLeases?.Remove(stmt.TableName);
+        _dirtyNextRowIdTables?.Remove(stmt.TableName);
         InvalidateTempSystemCatalogCaches();
         return new QueryResult(0);
     }
@@ -2376,12 +2412,14 @@ public sealed partial class QueryPlanner
                     ct);
 
                 await RenameTableWithDependenciesAsync(stmt.TableName, rename.NewTableName, schema, ct);
-                if (_nextRowIdCache.Remove(stmt.TableName, out long nextRowId))
-                    _nextRowIdCache[rename.NewTableName] = nextRowId;
-                if (_rowIdReservationLeases.Remove(stmt.TableName, out RowIdReservationLease? rowIdLease))
-                    _rowIdReservationLeases[rename.NewTableName] = rowIdLease;
-                if (_dirtyNextRowIdTables.Remove(stmt.TableName))
-                    _dirtyNextRowIdTables.Add(rename.NewTableName);
+                if (_nextRowIdCache is { } nextRowIds &&
+                    nextRowIds.Remove(stmt.TableName, out long nextRowId))
+                    NextRowIdCache[rename.NewTableName] = nextRowId;
+                if (_rowIdReservationLeases is { } rowIdLeases &&
+                    rowIdLeases.Remove(stmt.TableName, out RowIdReservationLease? rowIdLease))
+                    RowIdReservationLeases[rename.NewTableName] = rowIdLease;
+                if (_dirtyNextRowIdTables?.Remove(stmt.TableName) == true)
+                    DirtyNextRowIdTables.Add(rename.NewTableName);
                 break;
             }
 
@@ -2393,7 +2431,7 @@ public sealed partial class QueryPlanner
                 {
                     currentNextRowId = sharedNextRowId;
                 }
-                if (_nextRowIdCache.TryGetValue(stmt.TableName, out long cachedNextRowId) &&
+                if (NextRowIdCache.TryGetValue(stmt.TableName, out long cachedNextRowId) &&
                     cachedNextRowId > currentNextRowId)
                 {
                     currentNextRowId = cachedNextRowId;
@@ -2417,13 +2455,14 @@ public sealed partial class QueryPlanner
                     NextRowId = reseed.NextRowId,
                 };
                 await _catalog.UpdateTableSchemaAsync(stmt.TableName, reseededSchema, ct);
-                _nextRowIdCache[stmt.TableName] = reseed.NextRowId;
-                _dirtyNextRowIdTables.Add(stmt.TableName);
+                NextRowIdCache[stmt.TableName] = reseed.NextRowId;
+                DirtyNextRowIdTables.Add(stmt.TableName);
                 _nextRowIdObservationProvider?.Invoke(stmt.TableName, reseed.NextRowId);
-                if (_rowIdReservationLeases.TryGetValue(stmt.TableName, out RowIdReservationLease? lease) &&
+                if (_rowIdReservationLeases is { } rowIdLeases &&
+                    rowIdLeases.TryGetValue(stmt.TableName, out RowIdReservationLease? lease) &&
                     !lease.AdvanceTo(reseed.NextRowId))
                 {
-                    _rowIdReservationLeases.Remove(stmt.TableName);
+                    _rowIdReservationLeases?.Remove(stmt.TableName);
                 }
                 break;
             }
@@ -3775,7 +3814,7 @@ public sealed partial class QueryPlanner
 
     private TableSchema ResolveCorrelationTableRefSchema(TableRef tableRef)
     {
-        if (_correlationTableRefSchemaCache.TryGetValue(tableRef, out var cached))
+        if (CorrelationTableRefSchemaCache.TryGetValue(tableRef, out var cached))
             return cached;
 
         TableSchema resolved;
@@ -3796,7 +3835,7 @@ public sealed partial class QueryPlanner
                 throw new CSharpDbException(ErrorCode.Unknown, $"Unknown table ref type: {tableRef.GetType().Name}");
         }
 
-        _correlationTableRefSchemaCache[tableRef] = resolved;
+        CorrelationTableRefSchemaCache[tableRef] = resolved;
         return resolved;
     }
 
@@ -3828,7 +3867,7 @@ public sealed partial class QueryPlanner
     {
         ValidateStarAggregateProjection(query);
 
-        if (_correlationQueryOutputSchemaCache.TryGetValue(query, out var cached))
+        if (CorrelationQueryOutputSchemaCache.TryGetValue(query, out var cached))
             return cached;
 
         ColumnDefinition[] output;
@@ -3876,7 +3915,7 @@ public sealed partial class QueryPlanner
                 throw new CSharpDbException(ErrorCode.Unknown, $"Unknown query type: {query.GetType().Name}");
         }
 
-        _correlationQueryOutputSchemaCache[query] = output;
+        CorrelationQueryOutputSchemaCache[query] = output;
         return output;
     }
 
@@ -4062,7 +4101,7 @@ public sealed partial class QueryPlanner
         };
 
         await _catalog.CreateTriggerAsync(schema, ct);
-        _triggerBodyCache.Remove(stmt.TriggerName); // invalidate cache
+        _triggerBodyCache?.Remove(stmt.TriggerName); // invalidate cache
         return new QueryResult(0);
     }
 
@@ -4072,7 +4111,7 @@ public sealed partial class QueryPlanner
             return new QueryResult(0);
 
         await _catalog.DropTriggerAsync(stmt.TriggerName, ct);
-        _triggerBodyCache.Remove(stmt.TriggerName);
+        _triggerBodyCache?.Remove(stmt.TriggerName);
         return new QueryResult(0);
     }
 
@@ -5468,10 +5507,10 @@ public sealed partial class QueryPlanner
         try
         {
             // Parse the trigger body (cache it)
-            if (!_triggerBodyCache.TryGetValue(trigger.TriggerName, out var bodyStatements))
+            if (!TriggerBodyCache.TryGetValue(trigger.TriggerName, out var bodyStatements))
             {
                 bodyStatements = ParseTriggerBody(trigger.BodySql);
-                _triggerBodyCache[trigger.TriggerName] = bodyStatements;
+                TriggerBodyCache[trigger.TriggerName] = bodyStatements;
             }
 
             // Build a composite schema that can resolve NEW.col and OLD.col
@@ -5837,6 +5876,9 @@ public sealed partial class QueryPlanner
         bool persistRootChanges,
         CancellationToken ct = default)
     {
+        // Fast insert callers can bypass ExecuteAsync after another planner executes DDL.
+        InvalidateSchemaSensitiveCachesIfNeeded();
+
         if (HasTemporaryTable(stmt.TableName))
             return await ExecuteTemporaryInsertAsync(stmt, ct);
 
@@ -6852,7 +6894,7 @@ public sealed partial class QueryPlanner
                 QueryPlanAccessPathCategory.Temporary,
                 explicitRuntimeObserver);
 
-        if (_selectPlanCache.TryGetValue(stmt, out var cachedPlan))
+        if (SelectPlanCache.TryGetValue(stmt, out var cachedPlan))
         {
             _selectPlanCacheHitCount++;
             ObservePlanCacheLookup(
@@ -7318,22 +7360,22 @@ public sealed partial class QueryPlanner
     private void CacheSelectPlan(SelectStatement stmt, SelectPlanKind kind)
     {
         _selectPlanCacheStoreCount++;
-        if (_selectPlanCache.TryAdd(stmt, kind))
+        if (SelectPlanCache.TryAdd(stmt, kind))
         {
-            _selectPlanInsertionOrder.Enqueue(stmt);
+            SelectPlanInsertionOrder.Enqueue(stmt);
         }
         else
         {
-            _selectPlanCache[stmt] = kind;
+            SelectPlanCache[stmt] = kind;
         }
 
-        while (_selectPlanCache.Count > MaxSelectPlanCacheEntries &&
-               _selectPlanInsertionOrder.Count > 0)
+        while (SelectPlanCache.Count > MaxSelectPlanCacheEntries &&
+               SelectPlanInsertionOrder.Count > 0)
         {
-            var evicted = _selectPlanInsertionOrder.Dequeue();
-            _selectPlanCache.Remove(evicted);
-            _selectBatchPlanCache.Remove(evicted);
-            _selectJoinReorderCache.Remove(evicted);
+            var evicted = SelectPlanInsertionOrder.Dequeue();
+            _selectPlanCache?.Remove(evicted);
+            _selectBatchPlanCache?.Remove(evicted);
+            _selectJoinReorderCache?.Remove(evicted);
         }
     }
 
@@ -7359,10 +7401,10 @@ public sealed partial class QueryPlanner
             return stmt.From;
         }
 
-        if (!_selectJoinReorderCache.TryGetValue(stmt, out var cached))
+        if (!SelectJoinReorderCache.TryGetValue(stmt, out var cached))
         {
             cached = new CachedSelectJoinReorder();
-            _selectJoinReorderCache[stmt] = cached;
+            SelectJoinReorderCache[stmt] = cached;
         }
 
         if (!cached.Initialized)
@@ -7422,6 +7464,7 @@ public sealed partial class QueryPlanner
             if (stmt.Where != null)
             {
                 var indexOp = TryBuildIndexScan(simpleRef.TableName, stmt.Where, schema, out remainingWhere);
+                indexOp ??= TryBuildPrimaryKeyRangeScan(simpleRef.TableName, stmt.Where, schema, out remainingWhere);
                 if (indexOp != null)
                     op = indexOp;
             }
@@ -7435,6 +7478,16 @@ public sealed partial class QueryPlanner
 
                 sourceProvidesRequestedOrder = stmt.OrderBy is { Count: > 0 };
             }
+        }
+
+        // A bounded source still needs its residual predicate before ordering/TopN.
+        // It does not support the table scan's payload-level predicate pushdown.
+        if (remainingWhere != null && PhysicalPlanCapture.Unwrap(op) is PrimaryKeyRangeScanOperator)
+        {
+            op = AnnotatePhysicalPredicate(
+                new FilterOperator(op, GetOrCompileSpanExpression(remainingWhere, schema)),
+                remainingWhere);
+            remainingWhere = null;
         }
 
         // Push simple comparison predicates down to payload-level filtering so
@@ -9115,6 +9168,9 @@ public sealed partial class QueryPlanner
         bool persistRootChanges,
         CancellationToken ct = default)
     {
+        // Fast insert callers can bypass ExecuteAsync after another planner executes DDL.
+        InvalidateSchemaSensitiveCachesIfNeeded();
+
         if (HasTemporaryTable(insert.TableName))
             return await ExecuteTemporarySimpleInsertAsync(insert, ct);
 
@@ -9254,6 +9310,8 @@ public sealed partial class QueryPlanner
         bool persistRootChanges,
         CancellationToken ct)
     {
+        int primaryKeyColumnIndex = schema.PrimaryKeyColumnIndex;
+        int rowVersionColumnIndex = GetRowVersionColumnIndex(schema);
         int inserted = 0;
         long? generatedIntegerKey = null;
         byte[]? generatedRowVersion = null;
@@ -9273,9 +9331,9 @@ public sealed partial class QueryPlanner
         {
             for (int i = 0; i < insert.RowCount; i++)
             {
-                DbValue[] row = ResolveSimpleInsertRow(schema, explicitColumnIndices, insert.ValueRows[i]);
+                DbValue[] row = ResolveSimpleInsertRow(schema, explicitColumnIndices, insert.ValueRows[i], rowVersionColumnIndex);
 
-                InsertRowResult insertRow = await ExecuteBareInsertRowAsync(
+                InsertRowResult insertRow = await ExecuteBareInsertRowCoreAsync(
                     insert.TableName,
                     schema,
                     tree,
@@ -9284,6 +9342,8 @@ public sealed partial class QueryPlanner
                     insertTraversalSet,
                     reusableEncodingBuffer,
                     rowIdReservationCountHint: Math.Max(1, insert.RowCount - inserted),
+                    primaryKeyColumnIndex,
+                    rowVersionColumnIndex,
                     ct);
                 if (insert.RowCount == 1)
                 {
@@ -9332,7 +9392,7 @@ public sealed partial class QueryPlanner
             ct);
     }
 
-    private async ValueTask<InsertRowResult> ExecuteBareInsertRowAsync(
+    private ValueTask<InsertRowResult> ExecuteBareInsertRowAsync(
         string tableName,
         TableSchema schema,
         BTree tree,
@@ -9342,6 +9402,23 @@ public sealed partial class QueryPlanner
         ReusableInsertEncodingBuffer? reusableEncodingBuffer,
         int rowIdReservationCountHint,
         CancellationToken ct)
+        => ExecuteBareInsertRowCoreAsync(
+            tableName, schema, tree, row, traversalPath, traversalSet,
+            reusableEncodingBuffer, rowIdReservationCountHint,
+            schema.PrimaryKeyColumnIndex, GetRowVersionColumnIndex(schema), ct);
+
+    private async ValueTask<InsertRowResult> ExecuteBareInsertRowCoreAsync(
+        string tableName,
+        TableSchema schema,
+        BTree tree,
+        DbValue[] row,
+        List<uint>? traversalPath,
+        HashSet<uint>? traversalSet,
+        ReusableInsertEncodingBuffer? reusableEncodingBuffer,
+        int rowIdReservationCountHint,
+        int primaryKeyColumnIndex,
+        int rowVersionColumnIndex,
+        CancellationToken ct)
     {
         var (rowId, autoGeneratedRowId) = await ResolveRowIdForInsertAsync(
             tableName,
@@ -9349,13 +9426,14 @@ public sealed partial class QueryPlanner
             tree,
             row,
             rowIdReservationCountHint,
+            primaryKeyColumnIndex,
             ct);
-        byte[]? generatedRowVersion = await MaterializeInitialRowVersionAsync(schema, row, ct);
+        byte[]? generatedRowVersion = await MaterializeInitialRowVersionAsync(rowVersionColumnIndex, row, ct);
         RowConstraintValidator.ValidateRow(schema, row);
         long? generatedIntegerIdentity = autoGeneratedRowId &&
-            schema.PrimaryKeyColumnIndex >= 0 &&
-            schema.Columns[schema.PrimaryKeyColumnIndex].IsIdentity &&
-            schema.Columns[schema.PrimaryKeyColumnIndex].Type == DbType.Integer
+            primaryKeyColumnIndex >= 0 &&
+            schema.Columns[primaryKeyColumnIndex].IsIdentity &&
+            schema.Columns[primaryKeyColumnIndex].Type == DbType.Integer
                 ? rowId
                 : null;
         while (true)
@@ -9379,12 +9457,13 @@ public sealed partial class QueryPlanner
                     tree,
                     row,
                     rowIdReservationCountHint,
+                    primaryKeyColumnIndex,
                     ct);
                 RowConstraintValidator.ValidateRow(schema, row);
                 generatedIntegerIdentity = autoGeneratedRowId &&
-                    schema.PrimaryKeyColumnIndex >= 0 &&
-                    schema.Columns[schema.PrimaryKeyColumnIndex].IsIdentity &&
-                    schema.Columns[schema.PrimaryKeyColumnIndex].Type == DbType.Integer
+                    primaryKeyColumnIndex >= 0 &&
+                    schema.Columns[primaryKeyColumnIndex].IsIdentity &&
+                    schema.Columns[primaryKeyColumnIndex].Type == DbType.Integer
                         ? rowId
                         : null;
             }
@@ -11474,7 +11553,8 @@ public sealed partial class QueryPlanner
         {
             indexedSource = TryBuildIndexScan(tableName, where, schema, out remainingWhere)
                 ?? TryBuildIntegerIndexRangeScan(tableName, where, schema, out remainingWhere)
-                ?? TryBuildOrderedTextIndexRangeScan(tableName, where, schema, out remainingWhere);
+                ?? TryBuildOrderedTextIndexRangeScan(tableName, where, schema, out remainingWhere)
+                ?? TryBuildPrimaryKeyRangeScan(tableName, where, schema, out remainingWhere);
         }
 
         if (indexedSource != null)
@@ -11568,6 +11648,9 @@ public sealed partial class QueryPlanner
                 return true;
             case PrimaryKeyLookupOperator primaryKeyLookup:
                 rowId = primaryKeyLookup.CurrentRowId;
+                return true;
+            case PrimaryKeyRangeScanOperator primaryKeyRange:
+                rowId = primaryKeyRange.CurrentRowId;
                 return true;
             case IndexScanOperator indexScan:
                 rowId = indexScan.CurrentRowId;
@@ -12932,6 +13015,8 @@ public sealed partial class QueryPlanner
             {
                 Expression? remainingLocalPredicate = localPredicate;
                 var indexedLocalOp = TryBuildIndexScan(simple.TableName, localPredicate, qualifiedTableSchema, out var localResidualPredicate);
+                indexedLocalOp ??= TryBuildPrimaryKeyRangeScan(
+                    simple.TableName, localPredicate, qualifiedTableSchema, out localResidualPredicate);
                 if (indexedLocalOp != null)
                 {
                     op = indexedLocalOp;
@@ -14989,7 +15074,7 @@ public sealed partial class QueryPlanner
                 createLookupJoin,
                 createHashJoin,
                 adaptiveLease,
-                _adaptiveRuntimeDiagnostics,
+                AdaptiveRuntimeDiagnostics,
                 outerRows,
                 estimatedOutputRowCount);
         }
@@ -15491,7 +15576,7 @@ public sealed partial class QueryPlanner
                 estimatedOutputRowCount,
                 _functions,
                 adaptiveLease,
-                _adaptiveRuntimeDiagnostics);
+                AdaptiveRuntimeDiagnostics);
         }
         else
         {
@@ -15863,6 +15948,42 @@ public sealed partial class QueryPlanner
     #endregion
 
     #region Index Scan Selection
+
+    // Bounded table-tree fallback after existing equality and secondary-index choices.
+    private IOperator? TryBuildPrimaryKeyRangeScan(
+        string tableName,
+        Expression where,
+        TableSchema schema,
+        out Expression? remaining)
+    {
+        remaining = where;
+        // A materialized CTE can shadow a persistent table with a different row shape.
+        if (_cteData?.ContainsKey(tableName) == true)
+            return null;
+
+        TableSchema? baseSchema = _catalog.GetTable(tableName);
+        if (baseSchema is null ||
+            ResolvePrimaryKeyDefinition(baseSchema) is not { } primaryKey ||
+            !UsesPhysicalIntegerPrimaryKey(baseSchema, primaryKey))
+        {
+            return null;
+        }
+
+        int primaryKeyIndex = baseSchema.PrimaryKeyColumnIndex;
+        if (primaryKeyIndex < 0 || primaryKeyIndex >= schema.Columns.Count)
+            return null;
+
+        ExtractOrderedIndexRange(
+            where, schema, primaryKeyIndex,
+            out IndexScanRange range, out Expression? residual, out int consumedTermCount);
+        if (consumedTermCount == 0)
+            return null;
+
+        remaining = residual;
+        return new PrimaryKeyRangeScanOperator(
+            _catalog.GetTableTree(tableName, _pager), schema, range,
+            GetReadSerializer(baseSchema), projection: null, GetSchemaColumnsArray(schema));
+    }
 
     /// <summary>
     /// Attempts to use a point/equality lookup for a WHERE clause.
@@ -16684,7 +16805,8 @@ public sealed partial class QueryPlanner
         if (stmt.OrderBy is not { Count: 1 })
             return false;
 
-        if (PhysicalPlanCapture.Unwrap(currentSource) is not TableScanOperator)
+        IOperator physicalSource = PhysicalPlanCapture.Unwrap(currentSource);
+        if (physicalSource is not (TableScanOperator or PrimaryKeyRangeScanOperator))
             return false;
 
         if (_cteData != null && _cteData.ContainsKey(tableRef.TableName))
@@ -16716,14 +16838,17 @@ public sealed partial class QueryPlanner
         if (orderColumn.Type is not (DbType.Integer or DbType.Text))
             return false;
 
-        // INTEGER PRIMARY KEY is physically the table B+tree key, and table scan is key-ordered.
+        // Table scans and bounded physical-primary-key scans both retain ascending key order.
         int pkIdx = schema.PrimaryKeyColumnIndex;
         if (orderColumn.Type == DbType.Integer &&
-            pkIdx == orderColumnIndex &&
-            PhysicalPlanCapture.Unwrap(currentSource) is TableScanOperator)
+            pkIdx == orderColumnIndex)
         {
             return true;
         }
+
+        // Its consumed PK predicates must not be lost by replacing this bounded source.
+        if (physicalSource is PrimaryKeyRangeScanOperator)
+            return false;
 
         if (!stmt.Limit.HasValue &&
             !CanUseCoveredOrderedIndexScanWithoutLimit(stmt, schema, orderColumnIndex))
@@ -17102,6 +17227,19 @@ public sealed partial class QueryPlanner
         return true;
     }
 
+    private static DbValue[] DecodeRowWithNullPadding(IRecordSerializer serializer, ReadOnlySpan<byte> payload, int columnCount)
+    {
+        DbValue[] row = serializer.Decode(payload);
+        // Adding a nullable column without a default need not rewrite older stored records.
+        if (row.Length < columnCount)
+        {
+            int storedCount = row.Length;
+            Array.Resize(ref row, columnCount);
+            Array.Fill(row, DbValue.Null, storedCount, columnCount - storedCount);
+        }
+        return row;
+    }
+
     private bool TryMaterializeSyncIndexedLookupResult(
         IOperator lookupOp,
         TableSchema schema,
@@ -17130,7 +17268,7 @@ public sealed partial class QueryPlanner
         if (projectionColumnIndices == null)
         {
             DbValue[]? row = rowPayload is { } rowPayloadMemory
-                ? serializer.Decode(rowPayloadMemory.Span)
+                ? DecodeRowWithNullPadding(serializer, rowPayloadMemory.Span, outputSchema.Length)
                 : null;
             result = QueryResult.FromSyncLookup(row, outputSchema);
             return true;
@@ -19016,7 +19154,7 @@ public sealed partial class QueryPlanner
         TableSchema schema,
         IReadOnlyList<IndexSchema> indexes)
     {
-        if (_resolvedInsertIndexPlanCache.TryGetValue(schema, out ResolvedInsertIndexPlanSet? cached))
+        if (ResolvedInsertIndexPlanCache.TryGetValue(schema, out ResolvedInsertIndexPlanSet? cached))
             return cached;
 
         var fullTextIndexes = new List<IndexSchema>();
@@ -19068,7 +19206,7 @@ public sealed partial class QueryPlanner
             FullTextIndexes = fullTextIndexes.Count == 0 ? [] : [.. fullTextIndexes],
             SqlIndexes = sqlIndexes.Count == 0 ? [] : [.. sqlIndexes],
         };
-        _resolvedInsertIndexPlanCache.Add(schema, plans);
+        ResolvedInsertIndexPlanCache.Add(schema, plans);
         return plans;
     }
 
@@ -20535,22 +20673,22 @@ public sealed partial class QueryPlanner
         if (schema.Columns is ColumnDefinition[] columnsArray)
             return columnsArray;
 
-        if (_tableSchemaArrayCache.TryGetValue(schema, out var cached))
+        if (TableSchemaArrayCache.TryGetValue(schema, out var cached))
             return cached;
 
         var created = schema.Columns.ToArray();
-        _tableSchemaArrayCache[schema] = created;
+        TableSchemaArrayCache[schema] = created;
         return created;
     }
 
     private ColumnDefinition[] GetSingleColumnOutputSchema(TableSchema schema, int columnIndex)
     {
         var key = (schema, columnIndex);
-        if (_singleColumnOutputSchemaCache.TryGetValue(key, out var cached))
+        if (SingleColumnOutputSchemaCache.TryGetValue(key, out var cached))
             return cached;
 
         var created = new[] { schema.Columns[columnIndex] };
-        _singleColumnOutputSchemaCache[key] = created;
+        SingleColumnOutputSchemaCache[key] = created;
         return created;
     }
 
@@ -20815,19 +20953,19 @@ public sealed partial class QueryPlanner
             schema.Columns,
             requiresQualifiedMappings ? GetQualifiedMappingsFingerprint(schema) : null);
 
-        if (_compiledExpressionCache.TryGetValue(key, out var evaluator))
+        if (CompiledExpressionCache.TryGetValue(key, out var evaluator))
             return evaluator;
 
-        if (_compiledExpressionCache.Count >= MaxCompiledExpressionCacheEntries)
+        if (CompiledExpressionCache.Count >= MaxCompiledExpressionCacheEntries)
         {
-            _compiledExpressionCache.Clear();
-            _compiledSpanExpressionCache.Clear();
-            _qualifiedMappingFingerprintCache.Clear();
-            _requiresQualifiedMappingCache.Clear();
+            _compiledExpressionCache?.Clear();
+            _compiledSpanExpressionCache?.Clear();
+            _qualifiedMappingFingerprintCache?.Clear();
+            _requiresQualifiedMappingCache?.Clear();
         }
 
         evaluator = ExpressionCompiler.Compile(expression, schema, _functions);
-        _compiledExpressionCache[key] = evaluator;
+        CompiledExpressionCache[key] = evaluator;
         return evaluator;
     }
 
@@ -20847,19 +20985,19 @@ public sealed partial class QueryPlanner
             schema.Columns,
             requiresQualifiedMappings ? GetQualifiedMappingsFingerprint(schema) : null);
 
-        if (_compiledSpanExpressionCache.TryGetValue(key, out var evaluator))
+        if (CompiledSpanExpressionCache.TryGetValue(key, out var evaluator))
             return evaluator;
 
-        if (_compiledSpanExpressionCache.Count >= MaxCompiledExpressionCacheEntries)
+        if (CompiledSpanExpressionCache.Count >= MaxCompiledExpressionCacheEntries)
         {
-            _compiledExpressionCache.Clear();
-            _compiledSpanExpressionCache.Clear();
-            _qualifiedMappingFingerprintCache.Clear();
-            _requiresQualifiedMappingCache.Clear();
+            _compiledExpressionCache?.Clear();
+            _compiledSpanExpressionCache?.Clear();
+            _qualifiedMappingFingerprintCache?.Clear();
+            _requiresQualifiedMappingCache?.Clear();
         }
 
         evaluator = ExpressionCompiler.CompileSpan(expression, schema, _functions);
-        _compiledSpanExpressionCache[key] = evaluator;
+        CompiledSpanExpressionCache[key] = evaluator;
         return evaluator;
     }
 
@@ -20876,10 +21014,10 @@ public sealed partial class QueryPlanner
         SelectBatchPlanSlot slot,
         Func<IFilterProjectionBatchPlan?> factory)
     {
-        if (!_selectBatchPlanCache.TryGetValue(stmt, out var cachedPlans))
+        if (!SelectBatchPlanCache.TryGetValue(stmt, out var cachedPlans))
         {
             cachedPlans = new CachedSelectBatchPlans();
-            _selectBatchPlanCache[stmt] = cachedPlans;
+            SelectBatchPlanCache[stmt] = cachedPlans;
         }
 
         if (cachedPlans.TryGet(slot, out var cachedPlan))
@@ -21000,13 +21138,13 @@ public sealed partial class QueryPlanner
 
     private string GetQualifiedMappingsFingerprint(TableSchema schema)
     {
-        if (_qualifiedMappingFingerprintCache.TryGetValue(schema, out var fingerprint))
+        if (QualifiedMappingFingerprintCache.TryGetValue(schema, out var fingerprint))
             return fingerprint;
 
         if (schema.QualifiedMappings is not { Count: > 0 } qualified)
         {
             fingerprint = string.Empty;
-            _qualifiedMappingFingerprintCache[schema] = fingerprint;
+            QualifiedMappingFingerprintCache[schema] = fingerprint;
             return fingerprint;
         }
 
@@ -21015,17 +21153,17 @@ public sealed partial class QueryPlanner
             sb.Append(pair.Key).Append('=').Append(pair.Value).Append('|');
 
         fingerprint = sb.ToString();
-        _qualifiedMappingFingerprintCache[schema] = fingerprint;
+        QualifiedMappingFingerprintCache[schema] = fingerprint;
         return fingerprint;
     }
 
     private bool RequiresQualifiedMappings(Expression expression)
     {
-        if (_requiresQualifiedMappingCache.TryGetValue(expression, out bool cached))
+        if (RequiresQualifiedMappingCache.TryGetValue(expression, out bool cached))
             return cached;
 
         bool computed = ComputeRequiresQualifiedMappings(expression);
-        _requiresQualifiedMappingCache[expression] = computed;
+        RequiresQualifiedMappingCache[expression] = computed;
         return computed;
     }
 
@@ -21159,10 +21297,10 @@ public sealed partial class QueryPlanner
 
     private void InvalidateTempSystemCatalogCaches()
     {
-        _systemCatalogSchemaCache.Remove("sys.temp_tables");
-        _systemCatalogSchemaCache.Remove("sys_temp_tables");
-        _systemCatalogSchemaCache.Remove("sys.temp_columns");
-        _systemCatalogSchemaCache.Remove("sys_temp_columns");
+        _systemCatalogSchemaCache?.Remove("sys.temp_tables");
+        _systemCatalogSchemaCache?.Remove("sys_temp_tables");
+        _systemCatalogSchemaCache?.Remove("sys.temp_columns");
+        _systemCatalogSchemaCache?.Remove("sys_temp_columns");
     }
 
     private bool IsExternalTable(string tableName) =>
@@ -21332,10 +21470,11 @@ public sealed partial class QueryPlanner
         _externalTableRegistrationsCache = null;
         _systemExternalTablesRowsCache = null;
         _systemObjectsRowsCache = null;
-        _selectPlanCache.Clear();
-        _selectBatchPlanCache.Clear();
-        _selectJoinReorderCache.Clear();
-        _selectPlanInsertionOrder.Clear();
+        _selectPlanCache?.Clear();
+        ClearPreparedSelectPlans();
+        _selectBatchPlanCache?.Clear();
+        _selectJoinReorderCache?.Clear();
+        _selectPlanInsertionOrder?.Clear();
     }
 
     private void ThrowIfExternalTableTarget(string tableName, string operation)
@@ -21597,7 +21736,7 @@ public sealed partial class QueryPlanner
         string? alias,
         ColumnDefinition[] columns)
     {
-        if (alias is null && _systemCatalogSchemaCache.TryGetValue(tableNameToken, out var cached))
+        if (alias is null && SystemCatalogSchemaCache.TryGetValue(tableNameToken, out var cached))
             return cached;
 
         string qualifier = alias ?? tableNameToken;
@@ -21613,7 +21752,7 @@ public sealed partial class QueryPlanner
         };
 
         if (alias is null)
-            _systemCatalogSchemaCache[tableNameToken] = schema;
+            SystemCatalogSchemaCache[tableNameToken] = schema;
 
         return schema;
     }
@@ -25280,12 +25419,16 @@ public sealed partial class QueryPlanner
         return row;
     }
 
-    private DbValue[] ResolveSimpleInsertRow(TableSchema schema, int[]? explicitColumnIndices, DbValue[] values)
+    private DbValue[] ResolveSimpleInsertRow(
+        TableSchema schema,
+        int[]? explicitColumnIndices,
+        DbValue[] values,
+        int? knownRowVersionColumnIndex = null)
     {
         if (explicitColumnIndices is null)
         {
             ValidateInsertValueCount(schema.Columns.Count, values.Length);
-            int rowVersionColumnIndex = GetRowVersionColumnIndex(schema);
+            int rowVersionColumnIndex = knownRowVersionColumnIndex ?? GetRowVersionColumnIndex(schema);
             if (rowVersionColumnIndex >= 0)
                 ThrowExplicitRowVersionAssignment(schema.Columns[rowVersionColumnIndex]);
             return values;
@@ -25301,14 +25444,17 @@ public sealed partial class QueryPlanner
             useDefault[explicitColumnIndices[i]] = false;
         }
 
-        RejectExplicitRowVersionInsert(schema, useDefault);
+        RejectExplicitRowVersionInsert(schema, useDefault, knownRowVersionColumnIndex);
         RowConstraintValidator.ApplyDefaults(schema, row, useDefault);
         return row;
     }
 
-    private static void RejectExplicitRowVersionInsert(TableSchema schema, bool[] useDefault)
+    private static void RejectExplicitRowVersionInsert(
+        TableSchema schema,
+        bool[] useDefault,
+        int? knownRowVersionColumnIndex = null)
     {
-        int rowVersionColumnIndex = GetRowVersionColumnIndex(schema);
+        int rowVersionColumnIndex = knownRowVersionColumnIndex ?? GetRowVersionColumnIndex(schema);
         if (rowVersionColumnIndex >= 0 && !useDefault[rowVersionColumnIndex])
             ThrowExplicitRowVersionAssignment(schema.Columns[rowVersionColumnIndex]);
     }
@@ -25331,12 +25477,17 @@ public sealed partial class QueryPlanner
         return -1;
     }
 
-    private async ValueTask<byte[]?> MaterializeInitialRowVersionAsync(
+    private ValueTask<byte[]?> MaterializeInitialRowVersionAsync(
         TableSchema schema,
         DbValue[] row,
         CancellationToken ct)
+        => MaterializeInitialRowVersionAsync(GetRowVersionColumnIndex(schema), row, ct);
+
+    private async ValueTask<byte[]?> MaterializeInitialRowVersionAsync(
+        int rowVersionColumnIndex,
+        DbValue[] row,
+        CancellationToken ct)
     {
-        int rowVersionColumnIndex = GetRowVersionColumnIndex(schema);
         if (rowVersionColumnIndex < 0)
             return null;
 
@@ -26761,10 +26912,10 @@ public sealed partial class QueryPlanner
 
     private LogicalMutationConflictMetadata GetLogicalMutationConflictMetadata(string tableName, TableSchema schema)
     {
-        if (!_logicalMutationConflictMetadataCache.TryGetValue(schema, out Dictionary<string, LogicalMutationConflictMetadata>? schemaCache))
+        if (!LogicalMutationConflictMetadataCache.TryGetValue(schema, out Dictionary<string, LogicalMutationConflictMetadata>? schemaCache))
         {
             schemaCache = new Dictionary<string, LogicalMutationConflictMetadata>(StringComparer.OrdinalIgnoreCase);
-            _logicalMutationConflictMetadataCache.Add(schema, schemaCache);
+            LogicalMutationConflictMetadataCache.Add(schema, schemaCache);
         }
 
         if (!schemaCache.TryGetValue(tableName, out LogicalMutationConflictMetadata? metadata))
@@ -26937,15 +27088,26 @@ public sealed partial class QueryPlanner
         return buffer.AsMemory(0, written);
     }
 
-    private async ValueTask<(long RowId, bool AutoGenerated)> ResolveRowIdForInsertAsync(
+    private ValueTask<(long RowId, bool AutoGenerated)> ResolveRowIdForInsertAsync(
         string tableName,
         TableSchema schema,
         BTree tree,
         DbValue[] row,
         int rowIdReservationCountHint,
         CancellationToken ct)
+        => ResolveRowIdForInsertAsync(
+            tableName, schema, tree, row, rowIdReservationCountHint, schema.PrimaryKeyColumnIndex, ct);
+
+    private async ValueTask<(long RowId, bool AutoGenerated)> ResolveRowIdForInsertAsync(
+        string tableName,
+        TableSchema schema,
+        BTree tree,
+        DbValue[] row,
+        int rowIdReservationCountHint,
+        int primaryKeyColumnIndex,
+        CancellationToken ct)
     {
-        int pkIdx = schema.PrimaryKeyColumnIndex;
+        int pkIdx = primaryKeyColumnIndex;
         if (pkIdx >= 0 &&
             schema.Columns[pkIdx].Type == DbType.Integer &&
             schema.Columns[pkIdx].IsIdentity)
@@ -26998,7 +27160,7 @@ public sealed partial class QueryPlanner
         int rowIdReservationCountHint,
         CancellationToken ct)
     {
-        if (!_nextRowIdCache.TryGetValue(tableName, out long nextRowId))
+        if (!NextRowIdCache.TryGetValue(tableName, out long nextRowId))
             nextRowId = await LoadNextRowIdAsync(tableName, schema, tree, ct);
 
         long maximumRowId = GetGeneratedRowIdMaximum(schema);
@@ -27060,13 +27222,14 @@ public sealed partial class QueryPlanner
 
     private long ReserveRowIdFromLease(string tableName, long minimumNextRowId, int rowIdReservationCountHint)
     {
-        if (_rowIdReservationLeases.TryGetValue(tableName, out RowIdReservationLease? lease) &&
+        if (_rowIdReservationLeases is { } rowIdLeases &&
+            rowIdLeases.TryGetValue(tableName, out RowIdReservationLease? lease) &&
             lease.TryReserve(minimumNextRowId, out long leasedRowId))
         {
             return leasedRowId;
         }
 
-        _rowIdReservationLeases.Remove(tableName);
+        _rowIdReservationLeases?.Remove(tableName);
 
         int reservationCount = Math.Max(1, rowIdReservationCountHint);
         var (start, endExclusive) = _nextRowIdRangeReservationProvider!(tableName, minimumNextRowId, reservationCount);
@@ -27079,28 +27242,28 @@ public sealed partial class QueryPlanner
 
         long nextLeaseRowId = checked(start + 1);
         if (nextLeaseRowId < endExclusive)
-            _rowIdReservationLeases[tableName] = new RowIdReservationLease(nextLeaseRowId, endExclusive);
+            RowIdReservationLeases[tableName] = new RowIdReservationLease(nextLeaseRowId, endExclusive);
 
         return start;
     }
 
     private void InvalidateRowIdCache(string tableName)
     {
-        _nextRowIdCache.Remove(tableName);
-        _rowIdReservationLeases.Remove(tableName);
+        _nextRowIdCache?.Remove(tableName);
+        _rowIdReservationLeases?.Remove(tableName);
     }
 
     private async ValueTask<long> LoadNextRowIdAsync(string tableName, TableSchema schema, BTree tree, CancellationToken ct)
     {
         if (schema.NextRowId > 0)
         {
-            _nextRowIdCache[tableName] = schema.NextRowId;
+            NextRowIdCache[tableName] = schema.NextRowId;
             return schema.NextRowId;
         }
 
         if (_nextRowIdHintProvider?.Invoke(tableName) is long hintedNextRowId && hintedNextRowId > 0)
         {
-            _nextRowIdCache[tableName] = hintedNextRowId;
+            NextRowIdCache[tableName] = hintedNextRowId;
             return hintedNextRowId;
         }
 
@@ -27126,12 +27289,12 @@ public sealed partial class QueryPlanner
         if (nextRowId <= 0)
             return;
 
-        if (_nextRowIdCache.TryGetValue(tableName, out long cached))
-            _nextRowIdCache[tableName] = Math.Max(cached, nextRowId);
+        if (NextRowIdCache.TryGetValue(tableName, out long cached))
+            NextRowIdCache[tableName] = Math.Max(cached, nextRowId);
         else
-            _nextRowIdCache[tableName] = nextRowId;
+            NextRowIdCache[tableName] = nextRowId;
 
-        _dirtyNextRowIdTables.Add(tableName);
+        DirtyNextRowIdTables.Add(tableName);
 
         if (_useTransientNextRowIdHints)
         {
@@ -27149,19 +27312,20 @@ public sealed partial class QueryPlanner
         if (nextRowId <= 0)
             return;
 
-        if (_nextRowIdCache.TryGetValue(tableName, out long cached))
-            _nextRowIdCache[tableName] = Math.Max(cached, nextRowId);
+        if (NextRowIdCache.TryGetValue(tableName, out long cached))
+            NextRowIdCache[tableName] = Math.Max(cached, nextRowId);
         else if (schema.NextRowId > 0)
-            _nextRowIdCache[tableName] = Math.Max(schema.NextRowId, nextRowId);
+            NextRowIdCache[tableName] = Math.Max(schema.NextRowId, nextRowId);
         else
-            _nextRowIdCache[tableName] = nextRowId;
+            NextRowIdCache[tableName] = nextRowId;
 
-        _dirtyNextRowIdTables.Add(tableName);
+        DirtyNextRowIdTables.Add(tableName);
         _nextRowIdObservationProvider?.Invoke(tableName, nextRowId);
-        if (_rowIdReservationLeases.TryGetValue(tableName, out RowIdReservationLease? lease) &&
+        if (_rowIdReservationLeases is { } rowIdLeases &&
+            rowIdLeases.TryGetValue(tableName, out RowIdReservationLease? lease) &&
             !lease.AdvanceTo(nextRowId))
         {
-            _rowIdReservationLeases.Remove(tableName);
+            _rowIdReservationLeases?.Remove(tableName);
         }
 
         // Explicit rowid inserts can push the durable high-water mark forward, but persisting

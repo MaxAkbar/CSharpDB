@@ -27,7 +27,7 @@ namespace CSharpDB.Storage.Wal;
 /// </summary>
 public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvider, ICommitPathDiagnosticsProvider,
     ILiveWalRuntimeSnapshotProvider, IWalRecoveryRuntimeSnapshotProvider,
-    IWalCheckpointRuntimeSnapshotProvider
+    IWalCheckpointRuntimeSnapshotProvider, IWalCheckpointCopyPlan
 {
     private const int RuntimeDiagnosticsSnapshotMaxAttempts = 3;
     private const int WalStreamBufferSize = 64 * 1024;
@@ -248,6 +248,7 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
         }
     }
     internal IWalFlushPolicy FlushPolicy => _flushPolicy;
+    internal Func<ValueTask>? CheckpointPlanCapturedForTests { get; set; }
 
     bool ILiveWalRuntimeSnapshotProvider.TryGetLiveRuntimeDiagnosticsSnapshot(
         out WalRuntimeRawSnapshot snapshot)
@@ -1181,7 +1182,7 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
                     {
                         _index.AddCommittedFrame(committedPageId, committedOffset);
                     }
-                    _index.AdvanceRecoveredCommit();
+                    _index.AdvanceRecoveredCommit(frameOffset + PageConstants.WalFrameSize);
                     uncommittedBatch.Clear();
                 }
             }
@@ -1477,6 +1478,16 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
 
     // ============ Checkpoint ============
 
+    async ValueTask<ReadOnlyMemory<KeyValuePair<uint, long>>> IWalCheckpointCopyPlan.PrepareCheckpointCopyAsync(
+        uint pageCount, CancellationToken ct)
+    {
+        var checkpoint = await EnsureIncrementalCheckpointStateAsync(pageCount, ct);
+        return checkpoint is null
+            ? ReadOnlyMemory<KeyValuePair<uint, long>>.Empty
+            : checkpoint.CommittedPages.AsMemory(checkpoint.NextPageIndex,
+                checkpoint.CommittedPageCount - checkpoint.NextPageIndex);
+    }
+
     /// <summary>
     /// Checkpoint: copy all committed WAL pages to the database file, then
     /// truncate (reset) the WAL.
@@ -1509,11 +1520,13 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
 
         try
         {
-            var checkpoint = await EnsureIncrementalCheckpointStateAsync(cancellationToken);
+            var checkpoint = await EnsureIncrementalCheckpointStateAsync(pageCount, cancellationToken);
             if (checkpoint is null)
                 return true;
 
-            long requiredLength = (long)pageCount * PageConstants.PageSize;
+            // New commits may grow the database between copy slices. Their
+            // pages belong to a later copy; avoid resizing for every append.
+            long requiredLength = (long)checkpoint.DatabasePageCount * PageConstants.PageSize;
             if (device.Length < requiredLength)
                 await device.SetLengthAsync(requiredLength, cancellationToken);
 
@@ -3127,7 +3140,8 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
         Interlocked.Increment(ref _runtimeCheckpointProgressVersion);
     }
 
-    private async ValueTask<IncrementalCheckpointState?> EnsureIncrementalCheckpointStateAsync(CancellationToken cancellationToken)
+    private async ValueTask<IncrementalCheckpointState?> EnsureIncrementalCheckpointStateAsync(
+        uint pageCount, CancellationToken cancellationToken)
     {
         if (_incrementalCheckpoint is not null)
             return _incrementalCheckpoint;
@@ -3138,7 +3152,8 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
         var indexSnapshot = _index.GetCommittedStateSnapshot();
         var committedPages = indexSnapshot.LatestPageMap;
         int committedFrameCount = indexSnapshot.FrameCount;
-        long committedCommitCount = indexSnapshot.CommitCounter;
+        if (CheckpointPlanCapturedForTests is { } captured)
+            await captured();
         long streamLength;
 
         await _streamMutex.WaitAsync(cancellationToken);
@@ -3157,10 +3172,17 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
                 streamLength,
                 cancellationToken))
             {
+                // The index map/count may themselves be corrupt. Repair only
+                // the separately recorded published prefix; later bytes may
+                // have been appended without becoming durable or visible yet.
+                long publishedLength = indexSnapshot.PublishedWalTail;
+                if (publishedLength < PageConstants.WalHeaderSize || publishedLength > streamLength ||
+                    (publishedLength - PageConstants.WalHeaderSize) % PageConstants.WalFrameSize != 0)
+                    throw new CSharpDbException(ErrorCode.WalError, "Cannot rebuild checkpoint index from an invalid published WAL extent.");
+                streamLength = publishedLength;
                 committedPages = new Dictionary<uint, long>(Math.Max(4, committedPages.Count));
                 var pendingCommitFrames = new List<(uint PageId, long WalOffset)>(capacity: 16);
                 committedFrameCount = 0;
-                committedCommitCount = 0;
 
                 _stream.Position = PageConstants.WalHeaderSize;
                 byte[] frameHeaderBuffer = _recoveryFrameHeaderBuffer;
@@ -3218,25 +3240,20 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
                         continue;
 
                     committedFrameCount += pendingCommitFrames.Count;
-                    committedCommitCount++;
                     foreach (var (committedPageId, committedOffset) in pendingCommitFrames)
                         committedPages[committedPageId] = committedOffset;
 
                     pendingCommitFrames.Clear();
                 }
 
-                if (pendingCommitFrames.Count > 0)
-                    streamLength = pendingCommitFrames[0].WalOffset;
-
-                if (_stream.Length != streamLength)
-                {
-                    _stream.SetLength(streamLength);
-                    _writePosition = streamLength;
-                    SetRuntimeAllocatedBytes(streamLength);
-                    _uncommittedStartOffset = streamLength;
-                }
-
-                _index.OverwriteCommittedState(committedPages, committedFrameCount, committedCommitCount);
+                // A publisher may have advanced while the old prefix was read.
+                // Its newer state must survive this local checkpoint repair.
+                // Incomplete or invalid commits never enter the rebuilt map.
+                // Their bytes remain until checkpoint finalization, which can
+                // discard this exact prefix without truncating a later suffix.
+                if (!_index.TryRepairCommittedPages(committedPages, committedFrameCount,
+                        indexSnapshot.FrameCount, indexSnapshot.CommitCounter, publishedLength))
+                    throw new CSharpDbException(ErrorCode.WalError, "Committed WAL state advanced during checkpoint index repair; retry checkpointing.");
             }
         }
         finally
@@ -3245,7 +3262,7 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
         }
 
         int committedPageCount = committedPages.Count;
-        if (committedPageCount == 0)
+        if (committedPageCount == 0 && indexSnapshot.PublishedWalTail == PageConstants.WalHeaderSize)
             return null;
 
         EnsureCheckpointCommittedPageCapacity(committedPageCount);
@@ -3253,6 +3270,7 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
         int sortedCount = 0;
         bool isPageIdSortedAscending = true;
         uint previousPageId = 0;
+        long retainedWalStartOffset = indexSnapshot.PublishedWalTail;
         foreach (var committedPage in committedPages)
         {
             if (sortedCount > 0 && committedPage.Key < previousPageId)
@@ -3260,6 +3278,8 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
 
             sortedCommittedPages[sortedCount++] = committedPage;
             previousPageId = committedPage.Key;
+            retainedWalStartOffset = Math.Max(retainedWalStartOffset,
+                checked(committedPage.Value + PageConstants.WalFrameSize));
         }
 
         if (!isPageIdSortedAscending && committedPageCount > 1)
@@ -3267,7 +3287,11 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
 
         var snapshot = new KeyValuePair<uint, long>[committedPageCount];
         Array.Copy(sortedCommittedPages, 0, snapshot, 0, committedPageCount);
-        var checkpoint = new IncrementalCheckpointState(snapshot, committedPageCount, streamLength);
+        // The last frame of the captured generation is necessarily the latest
+        // mapping for its page. Never use a later physical append position here.
+        // After repair, the trusted tail additionally covers discarded corrupt
+        // commits whose frames no longer appear in the surviving page map.
+        var checkpoint = new IncrementalCheckpointState(snapshot, committedPageCount, retainedWalStartOffset, pageCount);
         SetIncrementalCheckpointState(checkpoint);
         return checkpoint;
     }
@@ -3285,10 +3309,13 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
             return true;
 
         long maxFrameOffset = streamLength - PageConstants.WalFrameSize;
-        byte[] frameHeaderBuffer = _recoveryFrameHeaderBuffer;
+        EnsureCheckpointBuffers();
+        EnsureCheckpointCommittedPageCapacity(CheckpointWriteChunkPages);
+        var validationPages = _checkpointCommittedPages;
+        int validationCount = 0;
+        long validationStartOffset = 0;
         foreach (var entry in committedPages)
         {
-            uint expectedPageId = entry.Key;
             long walOffset = entry.Value;
             if (walOffset < PageConstants.WalHeaderSize || walOffset > maxFrameOffset)
                 return true;
@@ -3296,27 +3323,60 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
             if ((walOffset - PageConstants.WalHeaderSize) % PageConstants.WalFrameSize != 0)
                 return true;
 
-            await ReadWalRangeIntoAsync(
-                walOffset,
-                frameHeaderBuffer.AsMemory(0, PageConstants.WalFrameHeaderSize),
-                cancellationToken);
+            // Validate every indexed header, but coalesce adjacent WAL frames.
+            // One asynchronous header read per page makes checkpoint admission
+            // scale with the entire working set even for a bounded copy step.
+            if (validationCount > 0 &&
+                (validationCount == CheckpointWriteChunkPages ||
+                 walOffset != validationStartOffset + (long)validationCount * PageConstants.WalFrameSize))
+            {
+                if (await RequiresCommittedStateRebuildForBatchAsync(
+                        validationPages, validationCount, validationStartOffset, cancellationToken))
+                    return true;
+                validationCount = 0;
+            }
 
-            uint actualPageId = BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(0, 4));
-            if (actualPageId != expectedPageId)
+            if (validationCount == 0)
+                validationStartOffset = walOffset;
+            validationPages[validationCount++] = entry;
+        }
+
+        return validationCount > 0 &&
+            await RequiresCommittedStateRebuildForBatchAsync(
+                validationPages, validationCount, validationStartOffset, cancellationToken);
+    }
+
+    private async ValueTask<bool> RequiresCommittedStateRebuildForBatchAsync(
+        KeyValuePair<uint, long>[] validationPages,
+        int count,
+        long startOffset,
+        CancellationToken cancellationToken)
+    {
+        byte[] readBuffer = _checkpointReadBuffer!;
+        await ReadWalRangeIntoAsync(
+            startOffset,
+            readBuffer.AsMemory(0, (count - 1) * PageConstants.WalFrameSize + PageConstants.WalFrameHeaderSize),
+            cancellationToken);
+
+        for (int i = 0; i < count; i++)
+        {
+            var header = readBuffer.AsSpan(i * PageConstants.WalFrameSize, PageConstants.WalFrameHeaderSize);
+            uint actualPageId = BinaryPrimitives.ReadUInt32LittleEndian(header.Slice(0, 4));
+            if (actualPageId != validationPages[i].Key)
                 return true;
 
-            uint frameSalt1 = BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(8, 4));
-            uint frameSalt2 = BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(12, 4));
+            uint frameSalt1 = BinaryPrimitives.ReadUInt32LittleEndian(header.Slice(8, 4));
+            uint frameSalt2 = BinaryPrimitives.ReadUInt32LittleEndian(header.Slice(12, 4));
             if (frameSalt1 != _salt1 || frameSalt2 != _salt2)
                 return true;
 
-            uint expectedHeaderChecksum = BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(16, 4));
+            uint expectedHeaderChecksum = BinaryPrimitives.ReadUInt32LittleEndian(header.Slice(16, 4));
             uint actualHeaderChecksum = ComputeHeaderChecksum(
                 actualPageId,
-                BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(4, 4)),
+                BinaryPrimitives.ReadUInt32LittleEndian(header.Slice(4, 4)),
                 frameSalt1,
                 frameSalt2,
-                frameHeaderBuffer.AsSpan(0, 16));
+                header.Slice(0, 16));
             if (expectedHeaderChecksum != actualHeaderChecksum)
                 return true;
         }
@@ -3583,17 +3643,20 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
         public IncrementalCheckpointState(
             KeyValuePair<uint, long>[] committedPages,
             int committedPageCount,
-            long retainedWalStartOffset)
+            long retainedWalStartOffset,
+            uint databasePageCount)
         {
             CommittedPages = committedPages;
             CommittedPageCount = committedPageCount;
             RetainedWalStartOffset = retainedWalStartOffset;
+            DatabasePageCount = databasePageCount;
         }
 
         public KeyValuePair<uint, long>[] CommittedPages { get; }
         public int CommittedPageCount { get; }
         public int NextPageIndex { get; set; }
         public long RetainedWalStartOffset { get; }
+        public uint DatabasePageCount { get; }
     }
 
     private sealed class PreparedPendingCommit : IDisposable

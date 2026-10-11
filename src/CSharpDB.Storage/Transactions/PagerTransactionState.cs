@@ -67,6 +67,9 @@ internal sealed class PagerTransactionState
 
     internal bool CommitStarted { get; set; }
 
+    // Set only by native conflict validation, before any WAL append/publication.
+    internal bool CommitRejectedBeforePublication { get; set; }
+
     internal bool Completed { get; set; }
 
     internal bool HasSchemaWriteLock { get; set; }

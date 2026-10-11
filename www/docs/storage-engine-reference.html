@@ -580,7 +580,7 @@
                 pager.ReleaseReaderSnapshot();
                 </code></pre></div>
                 <h3 id="p7-manual-checkpoint">P7. Manual Checkpoint</h3>
-                <p>Copy all committed WAL frames to the main database file, then reset the WAL. This invalidates transient WAL-backed reads, and can also invalidate transient memory-mapped views; with <code>PreserveOwnedPagesOnCheckpoint = true</code>, already-owned main-file pages can remain resident in the shared cache.</p>
+                <p>Copy the captured committed WAL pages to the main database file while preserving registered readers' page visibility. Finalization defers while registered snapshots retain WAL frames or durable commits have unpublished offsets; it resets the WAL or compacts a retained committed tail. Finalization shares the write-conflict commit mutex and holds it through pager state refresh. Transient page views may be invalidated; with <code>PreserveOwnedPagesOnCheckpoint = true</code>, already-owned main-file pages can remain resident in the shared cache.</p>
                 <div class="code-block" data-title="C#"><pre><code class="language-csharp">await pager.CheckpointAsync();
                 </code></pre></div>
                 <h3 id="p8-configure-checkpoint-policy">P8. Configure Checkpoint Policy</h3>
@@ -715,13 +715,14 @@
                 await wal.AppendFrameAsync(pageId: 5, pageData);
                 
                 // Commit: the last frame gets dbPageCount &gt; 0, marking the commit boundary
-                await wal.CommitAsync(newDbPageCount: pager.PageCount);
+                WalCommitResult commit = await wal.CommitAsync(newDbPageCount: pager.PageCount);
+                await commit.WaitAsync(); // durable flush and reader visibility
                 
                 // Or rollback: truncates uncommitted frames
                 await wal.RollbackAsync();
                 </code></pre></div>
                 <h3 id="w3-take-a-reader-snapshot">W3. Take a Reader Snapshot</h3>
-                <p>Freeze the WAL index at a point in time for a concurrent reader.</p>
+                <p>Freeze the WAL index at a point in time. This direct snapshot does not register a reader with the pager: keep checkpoint reset and compaction excluded until all reads using its offsets finish. For concurrent database reads, use <code>ReaderSession</code> or the pager's registered snapshot API.</p>
                 <div class="code-block" data-title="C#"><pre><code class="language-csharp">WalSnapshot snapshot = walIndex.TakeSnapshot();
                 
                 // Reader uses snapshot to resolve page lookups:
@@ -732,10 +733,9 @@
                 }
                 </code></pre></div>
                 <h3 id="w4-checkpoint-wal-to-database-file">W4. Checkpoint WAL to Database File</h3>
-                <p>Copy all committed WAL pages to the main database file, then reset the WAL.</p>
+                <p>Use <code>Database.CheckpointAsync()</code> or the owning <code>Pager.CheckpointAsync()</code> for a live database. The direct WAL call below requires standalone, externally serialized use with no active readers, writers, or pending commits. The WAL updates its own index; do not reset the index separately.</p>
                 <div class="code-block" data-title="C#"><pre><code class="language-csharp">await wal.CheckpointAsync(device, pageCount: pager.PageCount);
-                walIndex.Reset();
-                // WAL is now empty; all data is in the main file
+                // In this quiescent example, all committed data is in the main file
                 </code></pre></div>
                 <hr/>
                 <h2 id="slotted-page-layout">Slotted Page Layout</h2>
