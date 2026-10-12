@@ -540,6 +540,7 @@ public sealed partial class Database : IAsyncDisposable
             bool transactionStarted = false;
             try
             {
+                CaptureReaderCatalogBeforeWrite();
                 await _pager.BeginTransactionAsync(ct);
                 transactionStarted = true;
                 await _catalog.PersistRowVersionHighWaterAsync(reservedHighWater, ct);
@@ -1487,6 +1488,7 @@ public sealed partial class Database : IAsyncDisposable
         bool transactionStarted = false;
         try
         {
+            CaptureReaderCatalogBeforeWrite();
             await _pager.BeginTransactionAsync(ct);
             transactionStarted = true;
             bool regenerated = await _planner.RegenerateLegacyRowVersionTokensAsync(ct);
@@ -2190,6 +2192,7 @@ public sealed partial class Database : IAsyncDisposable
             await _writeOperationGate.WaitAsync(ct);
             try
             {
+                CaptureReaderCatalogBeforeWrite();
                 await _pager.BeginTransactionAsync(ct);
             }
             catch
@@ -3337,14 +3340,28 @@ public sealed partial class Database : IAsyncDisposable
     private async ValueTask<IDisposable> AcquireWriteOperationScopeAsync(CancellationToken ct)
     {
         if (_writeOperationGate.Wait(0))
-            return new WriteOperationScope(_writeOperationGate);
+            return CreateWriteOperationScope();
 
         // Report only a real write-admission wait. The generation-safe lease
         // restores the prior query phase on acquisition/cancellation without
         // inferring time spent by a consumer between streamed rows.
         using IDisposable? waiting = _queryObservability?.EnterWaiting();
         await _writeOperationGate.WaitAsync(ct);
-        return new WriteOperationScope(_writeOperationGate);
+        return CreateWriteOperationScope();
+    }
+
+    private IDisposable CreateWriteOperationScope()
+    {
+        try
+        {
+            CaptureReaderCatalogBeforeWrite();
+            return new WriteOperationScope(_writeOperationGate);
+        }
+        catch
+        {
+            _writeOperationGate.Release();
+            throw;
+        }
     }
 
     private void ReleaseExplicitTransactionWriteGate()
