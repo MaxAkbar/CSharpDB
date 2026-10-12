@@ -13,6 +13,8 @@ These notes cover changes since v4.6.5.
   primary-key ranges through pooled readers and ordinary queries.
 - Preserve reader catalog snapshots across commits and checkpoints, including
   schema metadata used by existing readers.
+- Preserve committed row-count metadata during writes and restore it after
+  publication, avoiding unnecessary full-table scans for reader `COUNT(*)` queries.
 - Reduce table-scan, LIMIT, snapshot-pager, and leaf-prefetch allocations. Forward
   intact row batches while preserving ownership and mixed row/batch traversal.
 - Streamline primary-key mutations and INSERT execution by reusing column ordinals,

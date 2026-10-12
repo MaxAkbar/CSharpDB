@@ -84,7 +84,7 @@
                     <h2>Prepared queries, bounded reads, and durable writes</h2>
                     <p>Prepared for v4.6.6, based on changes since v4.6.5. This candidate is not yet published; stable downloads remain on v4.6.5.</p>
                     <ul>
-                        <li><strong>Queries:</strong> reuse prepared SELECT plans, bound integer primary-key ranges, and preserve reader catalog snapshots across commits and checkpoints.</li>
+                        <li><strong>Queries:</strong> reuse prepared SELECT plans, bound integer primary-key ranges, preserve reader catalog snapshots, and avoid unnecessary COUNT(*) scans during concurrent writes.</li>
                         <li><strong>Execution:</strong> reduce scan, LIMIT, prefetch, and INSERT allocations while preserving row and storage-page ownership.</li>
                         <li><strong>Durable writes:</strong> reduce checkpoint stalls and improve WAL lifecycle handling.</li>
                         <li><strong>Storage correctness:</strong> prevent checkpoint reset and compaction from invalidating concurrent write-conflict WAL reads, and protect pending durable commit publication.</li>

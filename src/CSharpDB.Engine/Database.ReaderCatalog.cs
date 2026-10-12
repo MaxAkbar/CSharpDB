@@ -11,12 +11,41 @@ public sealed partial class Database
     private int _catalogPublications;
     private bool _readerCatalogCopyUnsafe;
 
-    internal sealed class ReaderCatalogState(WalSnapshot snapshot, CatalogReadSnapshot? catalog)
+    internal sealed class ReaderCatalogState(WalSnapshot snapshot, CatalogReadSnapshot? catalog,
+        bool capturedFromSharedCatalog = false)
     {
         internal readonly WalSnapshot Snapshot = snapshot;
         internal CatalogReadSnapshot? Catalog = catalog;
+        internal readonly bool CapturedFromSharedCatalog = capturedFromSharedCatalog;
         private SemaphoreSlim? _loadGate;
         internal SemaphoreSlim LoadGate => LazyInitializer.EnsureInitialized(ref _loadGate, static () => new(1, 1));
+    }
+
+    // The caller owns the legacy write-operation gate, before starting a transaction.
+    // Preserve committed metadata for readers admitted while the live catalog is dirty.
+    // Without this, a reader can lose exact counts and scan the whole table for COUNT(*).
+    private void CaptureReaderCatalogBeforeWrite()
+    {
+        // Databases that have never opened a reader incur no capture work.
+        if (Volatile.Read(ref _readerCatalogState) is null) return;
+        lock (_readerCatalogGate)
+        {
+            if (_catalogPublications != 0 || _readerCatalogCopyUnsafe || !_sharedStateGate.Wait(0)) return;
+            try
+            {
+                WalSnapshot snapshot = _pager.AcquireReaderSnapshot();
+                try
+                {
+                    if (!_inTransaction && _pager.CanCaptureCommittedCatalog(snapshot))
+                    {
+                        var catalog = _catalog.CaptureReadSnapshot(_readerCatalogState?.Catalog);
+                        _readerCatalogState = new ReaderCatalogState(snapshot, catalog, capturedFromSharedCatalog: true);
+                    }
+                }
+                finally { _pager.ReleaseReaderSnapshot(snapshot); }
+            }
+            finally { _sharedStateGate.Release(); }
+        }
     }
 
     private ReaderSession CreateReaderSessionCore(IReadOnlyDictionary<string, long>? snapshotRowCounts = null)
@@ -27,7 +56,8 @@ public sealed partial class Database
             try
             {
                 ReaderCatalogState? state = _readerCatalogState;
-                if (state is null || !state.Snapshot.SharesPageState(snapshot))
+                bool samePageState = state is not null && state.Snapshot.SharesPageState(snapshot);
+                if (!samePageState || !state!.CapturedFromSharedCatalog)
                 {
                     CatalogReadSnapshot? catalog = null;
                     // Neither gate waits: an active writer uses the snapshot-backed fallback.
@@ -48,11 +78,16 @@ public sealed partial class Database
                         }
                         finally { _writeOperationGate.Release(); }
                     }
-                    state = new ReaderCatalogState(snapshot, catalog);
+                    // A fallback deliberately distrusts persisted exact counts. Retry capture
+                    // after publication finishes, even when the committed pages have not changed.
+                    // Replace the state only on success, retaining the old fallback's load gate
+                    // and catalog for its readers while a writer still prevents safe capture.
+                    if (catalog is not null || !samePageState)
+                        state = new ReaderCatalogState(snapshot, catalog, catalog is not null);
                     _readerCatalogState = state;
                 }
 
-                return new ReaderSession(this, _pager, state, _recordSerializer, snapshot,
+                return new ReaderSession(this, _pager, state!, _recordSerializer, snapshot,
                     _statementCache, _functions, _planner.AdaptiveQueryReoptimization,
                     _planner.WindowExecution, _queryObservability, _queryPlanRuntimeObserver, snapshotRowCounts);
             }
