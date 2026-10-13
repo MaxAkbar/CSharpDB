@@ -93,7 +93,7 @@ dotnet run --project src/CSharpDB.Admin.Forms.Web/CSharpDB.Admin.Forms.Web.cspro
 Run against the Fulfillment Hub sample database on an explicit local URL:
 
 ```powershell
-dotnet run --project src/CSharpDB.Admin.Forms.Web/CSharpDB.Admin.Forms.Web.csproj -- --urls http://127.0.0.1:5095 --CSharpDB:DataSource=C:\Users\maxim\source\Code\CSharpDB\samples\fulfillment-hub\bin\Debug\net10.0\fulfillment-hub-demo.db
+dotnet run --project src/CSharpDB.Admin.Forms.Web/CSharpDB.Admin.Forms.Web.csproj -- --urls http://127.0.0.1:5095 --CSharpDB:DataSource=./samples/fulfillment-hub/bin/Debug/net10.0/fulfillment-hub-demo.db
 ```
 
 After startup:

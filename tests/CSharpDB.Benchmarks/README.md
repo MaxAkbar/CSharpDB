@@ -1,66 +1,34 @@
 # CSharpDB Benchmark Suite
 
-This README is the stable, user-facing performance summary for CSharpDB. It answers three questions:
+This guide describes benchmark workloads, measurement conditions, and commands for comparing CSharpDB performance. The complete harness list is in [BENCHMARK_CATALOG.md](BENCHMARK_CATALOG.md).
 
-- How fast is CSharpDB on the core workloads we care about?
-- Which benchmark produced each published number?
-- Is the latest release benchmark run clean enough to promote?
+## Migration Benchmarks
 
-Historical release summaries, external evidence identifiers, and investigation
-detail live in [HISTORY.md](HISTORY.md). Generated benchmark evidence remains
-outside the repository. The full harness catalog lives in
-[BENCHMARK_CATALOG.md](BENCHMARK_CATALOG.md).
-
-Phase 2 staged-migration target qualification is available with:
+The staged-migration benchmark compares 100K and 1M row loads using the same 1,000-row/69,000-byte live batch bound:
 
 ```powershell
 dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --migration-target-throughput --repro
 ```
 
-It compares 100K and 1M row loads with the same 1,000-row/69,000-byte live
-batch bound. The recorded qualification and environment are in
-[`docs/migration-tooling-phase-2-performance.md`](../../docs/migration-tooling-phase-2-performance.md).
-
-The retained CSV diagnostic exercises immutable inspection, package reopen,
-full replay, staged apply, a fresh-session resume, and source/target checksum
-validation. Run the two sizes in separate processes so process peak-memory
-observations are not cumulative:
+The retained CSV benchmark exercises inspection, package reopen, full replay, staged apply, session resume, and source/target checksum validation. Run the two sizes in separate processes so peak-memory measurements are independent:
 
 ```powershell
 dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --csv-retained-migration-scenario Rows100K_Batch1000_Text64 --repro
 dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --csv-retained-migration-scenario Rows1M_Batch1000_Text64 --repro
 ```
 
-The recorded environment, results, and resource analysis are in
-[`docs/migration-csv-performance.md`](../../docs/migration-csv-performance.md).
-
-The harness fails only on deterministic package, catalog, cursor, row,
-receipt, resume, checksum, cleanup, and fixed live-batch invariants. Its timing,
-allocation, heap, and working-set values are diagnostic evidence rather than
-release thresholds.
+The CSV harness checks package, catalog, cursor, row, receipt, resume, checksum, cleanup, and fixed live-batch invariants. Timing, allocation, heap, and working-set measurements are diagnostic results rather than release thresholds.
 
 ## Benchmark Contract
 
-Published numbers in this file are a release contract, not a scratchpad. They are promoted only from the balanced release-core suite after the release guardrail comparison passes on the canonical or same-machine runner.
+Published numbers come from the balanced release-core suite after the release guardrail comparison passes on the canonical or same-machine runner. Hardware, runtime, storage mode, and workload must match for a meaningful comparison.
 
-Core rules:
-
-- The main README is user-first. It should stay short enough to scan.
-- `--all` is diagnostic only. It is never a direct source for published tables.
-- Failed release runs may add a concise human-authored summary or external
-  evidence identifier to [HISTORY.md](HISTORY.md), not raw CSVs, manifests,
-  logs, reports, or temporary files.
-- Targeted reruns can diagnose a problem, but they do not replace current published numbers unless the full release-core promotion rule passes.
+- File-backed values include disk durability unless a row explicitly says otherwise.
+- In-memory and buffered workloads are labeled separately.
+- `--all` runs diagnostic workloads and is not a source for published tables.
+- Keep generated CSVs, manifests, logs, reports, and temporary files outside source control.
+- Focused runs help diagnose a workload; they do not replace the complete release-core comparison.
 - The generated region below is owned by `scripts/Update-BenchmarkReadme.ps1` and `release-core-manifest.json`.
-
-Current release health:
-
-| Item | Status |
-|---|---|
-| Latest release guardrail | `FULL POST-FIX COMPLETE / 1 COMPATIBLE-RUNNER WARNING / NOT PROMOTED` |
-| Latest compare | `PASS=186, WARN=1, SKIP=0, FAIL=0`; the single durable-flush warning reproduced on v4.0.3 and was slower there, isolating it to runner/storage drift |
-| Promotion state | Current published tables remain promoted from the May 6, 2026 release-core suite. The July 16-17 post-fix release-core and guardrail suites completed, but Windows `10.0.26200` does not match the canonical `10.0.26300` fingerprint and the runner ID is unset, so the new results are retained as compatible-runner evidence rather than promoted tables |
-| Durability default | CSharpDB values are durable unless a row explicitly says otherwise |
 
 ## Core Performance Scorecard
 
@@ -74,14 +42,9 @@ The generated block below contains the scorecard first, then the current core re
 | Field | Value |
 |---|---|
 | Published snapshot | May 6, 2026 release-core snapshot |
-| Run date | Release-core artifacts captured May 6, 2026 UTC; latest release guardrail close-out captured May 31, 2026 UTC |
-| Promotion status | Published tables remain promoted from the May 6 release-core suite; the May 31 guardrail close-out is clean for current code after the temporary-table hot-path fix, but no newer release-core scorecard was promoted |
-| Latest release guardrail | PASS=187, WARN=0, SKIP=0, FAIL=0 |
-| Close-out note | Full post-fix guardrail produced the current micro and diagnostic artifacts; WriteTransaction Diagnostics stopped once during the full wrapper, then the identical focused repeat completed and was staged before the final compare |
+| Run date | May 6, 2026 (UTC) |
 | Published runner | Intel i9-11900K, 16 logical cores, Windows 10.0.26300, .NET SDK 10.0.203, .NET runtime 10.0.7 |
-| Latest compare runner | Intel i9-11900K, 16 logical cores, Windows 10.0.26300, .NET SDK 10.0.203, .NET runtime 10.0.8 |
 | Repro mode | priority=High, affinity=0xFF when captured with --repro |
-| Commit | 47a700950a150669ce404294c594dd845550f460 |
 
 ### Approved Source Artifacts
 
@@ -101,7 +64,6 @@ These are the headline rows readers should use first. Detailed tables below map 
 
 | Area | Metric | Result | Source |
 |---|---|---|---|
-| Release health | Latest guardrail compare | PASS: PASS=187, FAIL=0 | `Run-Perf-Guardrails.ps1 -Mode release` after the temp-table hot-path fix, with focused `--write-transaction-diagnostics --repeat 3 --repro` close-out for the interrupted wrapper step |
 | SQL durable write | Single INSERT | 267.1 ops/sec | `master` |
 | SQL durable write | Batch x100 | 25.56K rows/sec | `master` |
 | SQL hot read | Point lookup | 1.48M ops/sec | `master` |
@@ -183,236 +145,6 @@ Each row is total successful commits/sec across one shared engine. The intended 
 | SQLite WAL+FULL point lookup | 93.91K ops/sec | 0.0088 ms | 0.0282 ms |
 <!-- BENCHMARK_RESULTS_END -->
 
-## July 16-17, 2026 Full Post-Fix Release Close-Out - Compatible Runner, Not Promoted
-
-The complete post-fix release-core and release guardrail suites ran from commit `c3f0a442dfde6e41fcb0d8e6f32ac02f316949af`. All seven release-core medians and all 187 guardrail rows were produced. The generated scorecard above remains on the May 6 snapshot because this runner does not match the canonical OS fingerprint. Full commands, artifacts, row-level comparisons, and the durable-flush A/B are recorded in [HISTORY.md](HISTORY.md#july-16-17-2026-full-post-fix-release-close-out-compatible-runner-not-promoted).
-
-| Run | Result | Duration |
-|---|---|---:|
-| `--release-core --repeat 3 --repro` | Seven medians, `125/125` expected rows, no schema/name mismatches | `1h08m02s` |
-| Full release guardrails | `PASS=186, WARN=1, SKIP=0, FAIL=0`; compatible non-authoritative runner | `1h49m08s` |
-| Focused write diagnostics | Reproduced the three durable rows at `+15.61%` to `+17.38%` versus the March baseline | `8m57s` |
-| Same-session v4.0.3 control | v4.0.3 measured `220.0-226.0 ops/sec`; v4.0.4 measured `230.4-234.0 ops/sec` on the same rows (`+3.2%` to `+6.4%`) | `9m16s` |
-| Full Release correctness | `2,152/2,152` tests passed | `2m33s` |
-
-Using an absolute `8%` throughput screen against the published May artifacts, `71` of `125` rows improved, `2` regressed, and `52` stayed within the band. Both regressions are in the historically noisy in-memory resident-hot-set suite: SQL was `-16.6%` with a `136.9%` repetition spread, and Collection was `-20.8%` with a `366.8%` spread. All 28 master rows are within `+/-8%` of the focused post-fix July master artifact, and all 14 master read rows are within `-3.6%` to `+2.0%`; the six initially flagged master reads remain recovered.
-
-| Headline row | Published May | July 17 post-fix | Delta |
-|---|---:|---:|---:|
-| Durable SQL single insert | 267.1 ops/sec | 274.5 ops/sec | `+2.8%` |
-| Durable SQL batch x100 | 25.56K rows/sec | 25.79K rows/sec | `+0.9%` |
-| SQL point lookup | 1.48M ops/sec | 1.52M ops/sec | `+3.0%` |
-| SQL concurrent read burst x32 | 9.68M ops/sec | 12.50M ops/sec | `+29.1%` |
-| Collection point get | 1.99M ops/sec | 2.08M ops/sec | `+4.7%` |
-| Durable `InsertBatch` B1000 | 211.99K rows/sec | 214.13K rows/sec | `+1.0%` |
-| Concurrent durable W8 / 250us | 890.1 commits/sec | 983.0 commits/sec | `+10.4%` |
-| Hybrid hot-set SQL burst | 383.87K ops/sec | 640.11K ops/sec | `+66.8%` |
-| SQLite WAL+FULL B1000 reference | 155.66K rows/sec | 194.86K rows/sec | `+25.2%` |
-
-The one guardrail warning was `WriteDiagnostics_SingleRow_Frame4096Background256Batch250us_10s` at `+15.49%` against a `15%` limit. A focused repeat put all three required write-diagnostic rows just above that limit, but the identical detached v4.0.3 control was slower than v4.0.4. Work per commit remained about `3.02` dirty pages and `12.2 KiB` per flush; the slowdown tracked durable-flush latency. This is recorded as runner/storage drift, not a 4.0.4 regression or a clean canonical promotion.
-
-## July 15-16, 2026 Full-Sweep Candidate and Post-Fix Close-Out - Not Promoted
-
-The broad diagnostic sweep, balanced release-core run, and complete release guardrail collection all finished successfully on `codex/numeric-relationship-scan-ab`. The initial July guardrail found seven real read-path slowdowns despite their warn-only enforcement classification. A focused fix and close-out then cleared those rows and recovered the flagged master-table reads. The generated scorecard above remains on the May 6 promoted snapshot because the post-fix work did not rerun the complete release-core and guardrail suites on the canonical fingerprint. Full commands, artifacts, and row-level detail are recorded in [HISTORY.md](HISTORY.md#july-15-16-2026-numeric-relationship-join-ab-and-full-sweep-not-promoted).
-
-| Run | Result | Duration |
-|---|---|---:|
-| Broad `--all --repro` diagnostic | 705 BenchmarkDotNet cases in 74 reports, then 17 command-level suites; no failures | `3h39m` |
-| `--release-core --repeat 3 --repro` | All seven median artifacts produced | `1h07m39s` |
-| Initial release guardrails | `PASS=180, WARN=7, SKIP=0, FAIL=0`; compatible non-authoritative runner | `1h47m53s` |
-| Focused scalar + text close-out | All seven warned rows passed; composite compare `PASS=187, WARN=0, SKIP=0, FAIL=0` | `6m49s` |
-| Post-fix master table | Three-run median produced; every point/concurrent-read row improved versus the initial July median | `18m53s` |
-| Reader-session allocation check | Per-query `COUNT(*)` improved from about `296.32 ns / 792 B` to `281.34 ns / 712 B` | `2m02s` |
-| Full correctness suite | `1,400/1,400` tests passed | `1m27s` |
-
-Directional release-core changes versus the currently published May scorecard are shown below. Across all 125 original candidate rows using an absolute 8% throughput screen, 100 improved, six regressed, and 19 stayed within the band; the six initial material regressions were confined to master-table concurrent per-query reads and collection point gets. The post-fix master rerun recovered all six, but neither candidate is a promoted scorecard.
-
-| Headline row | Published May | July candidate | Direction |
-|---|---:|---:|---:|
-| Durable SQL single insert | 267.1 ops/sec | 451.9 ops/sec | `+69.2%` |
-| Durable SQL batch x100 | 25.56K rows/sec | 42.57K rows/sec | `+66.5%` |
-| SQL point lookup | 1.48M ops/sec | 1.39M ops/sec | `-6.1%` |
-| SQL concurrent read burst x32 | 9.68M ops/sec | 11.54M ops/sec | `+19.2%` |
-| Collection point get | 1.99M ops/sec | 1.85M ops/sec | `-7.0%` |
-| Durable `InsertBatch` B1000 | 211.99K rows/sec | 234.38K rows/sec | `+10.6%` |
-| Concurrent durable W8 / 250us | 890.1 commits/sec | 1,031.1 commits/sec | `+15.8%` |
-| Hybrid hot-set SQL burst | 383.87K ops/sec | 876.97K ops/sec | `+128.5%` |
-| SQLite WAL+FULL B1000 reference | 155.66K rows/sec | 212.46K rows/sec | `+36.5%` |
-
-The seven warnings came from overflow-page support making every ordinary inline B-tree cursor row parse its leaf header twice and enter an async payload resolver. The fix returns the overflow flag from the existing payload parse and resolves only actual overflow values. Snapshot churn was addressed separately by maintaining the retained-WAL minimum incrementally and sharing the immutable empty snapshot map; the focused reader-session rerun confirms that this removes `80 B` from each no-WAL per-query `COUNT(*)` session.
-
-| Initially flagged row | Initial July | Post-fix | Post-fix vs guardrail baseline |
-|---|---:|---:|---:|
-| Hash `SUM` via `GROUP BY 1`, 1K | 73.96 us | 52.94 us | `-0.79%` |
-| Scalar `AVG`, 10K | 708.98 us | 520.58 us | `-3.97%` |
-| Scalar `MAX`, 10K | 877.05 us | 582.96 us | `-1.72%` |
-| Scalar `MIN`, 10K | 843.04 us | 568.79 us | `-3.71%` |
-| Scalar `SUM`, 1K | 77.40 us | 52.27 us | `-10.62%` |
-| Scalar `SUM`, 10K | 753.72 us | 512.32 us | `-5.86%` |
-| Text equality without index, 10K | 812.83 us | 681.49 us | `+26.96%` (limit `40%`) |
-
-All 14 master-table point/concurrent-read rows improved by `+6.4%` to `+21.3%` versus the initial July median. The six initially material read regressions are now between `-4.2%` and `+4.1%` of the published May values:
-
-| Initially regressed row | Initial July | Post-fix | Post-fix vs published May |
-|---|---:|---:|---:|
-| Direct-client concurrent reads/query | 434.06K | 526.61K | `-1.0%` |
-| Hybrid concurrent reads/query | 1.023M | 1.147M | `-4.2%` |
-| File-backed concurrent reads/query | 989.81K | 1.171M | `+1.5%` |
-| In-memory concurrent reads/query | 1.001M | 1.171M | `+0.5%` |
-| In-memory collection point get | 1.845M | 2.105M | `+4.1%` |
-| Hybrid collection point get | 1.855M | 2.092M | `+3.8%` |
-
-The updated composite guardrail report is `tests/CSharpDB.Benchmarks/results/perf-guardrails-last.md`. It reuses the completed full collection for rows that were not targeted and replaces the scalar/text reports with focused post-fix measurements; it is a close-out artifact, not a second full two-hour wrapper run. All 40 existing general join guardrail rows remain passing.
-
-## Focused Numeric Relationship INNER JOIN Optimization Validation
-
-These diagnostic benchmark rows validate the supported, cost-gated numeric relationship plan selected automatically by default against the fallback join plan. The benchmark rows are not release-core or guardrail baseline rows yet.
-
-```powershell
-dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --micro --filter *NumericRelationship*
-```
-
-Source CSVs:
-
-- `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.NumericRelationshipSqlJoinBenchmarks-report.csv`
-- `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.NumericRelationshipJoinBenchmarks-report.csv`
-
-| Child fanout | Fallback plan | Cost-gated Auto | Read speedup | Allocation change |
-|---:|---:|---:|---:|---:|
-| 1 | 1.1128 ms | 0.6053 ms | `1.84x` | 604.76 KB to 282.88 KB (`-53.2%`) |
-| 10 | 6.1200 ms | 0.9037 ms | `6.77x` | 2,753.46 KB to 361.67 KB (`-86.9%`) |
-| 100 | 59.9609 ms | 5.3951 ms | `11.11x` | 24,317.84 KB to 1,249.61 KB (`-94.9%`) |
-
-This transparent optimization is enabled by default in 4.0.4. Its automatic path is deliberately narrow: a declared `INTEGER` primary-key-to-foreign-key relationship, an existing FK support index, key-only projection, and a broad `INNER JOIN`. Text keys, payload projections, predicates/residuals, outer or reversed joins, and `LIMIT`/`OFFSET` retain the existing plan. Payload fallback stayed within `1.4%` in time and `0.7%` in allocation. Direct point-lookup diagnostics were slower for the numeric relationship operator, which is why the planner gate excludes them. No separately maintained join index is added, so upserts keep the existing PK/FK index-maintenance path. These new benchmark classes measure reads; relationship upsert maintenance is covered for correctness, but there is not yet a relationship-specific upsert throughput row.
-
-## Focused Insert Fan-In Validation
-
-These rows are from the May 5, 2026 targeted validation run for the opt-in `ImplicitInsertExecutionMode.ConcurrentWriteTransactions` insert path. They are not promoted release-core scorecard rows yet; they document the current proof point for hot one-row concurrent inserts and are guarded by current-only release checks until the release-core suite includes these shapes directly.
-
-Command:
-
-```powershell
-dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --insert-fan-in-diagnostics --repro
-```
-
-Source CSV:
-
-`tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/insert-fan-in-diagnostics-20260505-233424.csv`
-
-| Insert shape | Writers/window | Commits/sec | Commits/flush | Notes |
-|---|---|---:|---:|---|
-| Serialized explicit hot right-edge | W8, 250us | 278.4 | 1.00 | Default serialized control |
-| Concurrent explicit hot right-edge | W8, 250us | 910.3 | 3.33 | Pending right-edge rebase path |
-| Concurrent auto-ID hot right-edge | W8, 250us | 913.1 | 3.34 | Row-ID reservation plus pending rebase |
-| Concurrent explicit disjoint ranges | W8, 250us | 1,049.6 | 3.96 | Existing best-case concurrent insert shape remains strong |
-
-Operational guidance: keep `Serialized` as the default. Use `ConcurrentWriteTransactions` only for workloads that can benefit from shared-engine one-row commit fan-in; `InsertBatch` remains the preferred bulk-ingest path.
-
-## Focused Optimizer And Async I/O Close-Out Validation
-
-These May 5, 2026 rows are diagnostic close-out proof for the current advanced optimizer and async I/O batching phases. They are not promoted release-core scorecard rows; they document workload-shaped gains and audited coverage while future adaptive re-optimization and specialized maintenance tuning remain separate roadmap items. Public planner-stat inspection is now covered by the `sys.planner_*` catalog and `EXPLAIN ESTIMATE` diagnostic benchmarks.
-
-Optimizer command:
-
-```powershell
-dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --optimizer-closeout --repro
-```
-
-Optimizer source CSV:
-
-`tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/optimizer-closeout-20260505-204536.csv`
-
-| Optimizer shape | No ANALYZE | ANALYZE | Ratio | What it validates |
-|---|---:|---:|---:|---|
-| Heavy-hitter equality | 11,671 queries/sec | 17,091 queries/sec | 1.46x | Skew-aware equality and non-unique lookup costing |
-| Histogram cold range | 21,895 queries/sec | 23,175 queries/sec | 1.06x | Equi-depth range estimates avoid worse plans |
-| Composite correlation | 522 queries/sec | 987 queries/sec | 1.89x | Composite-prefix stats preserve correlated equality selectivity |
-| Bounded join reorder | 9,628 queries/sec | 11,247 queries/sec | 1.17x | Small inner-join chains use bounded DP reordering |
-
-Public planner diagnostics smoke command:
-
-```powershell
-dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --micro --filter *SystemCatalogBenchmarks*Planner* --job Dry
-dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --micro --filter *ExplainEstimate* --job Dry
-```
-
-| Public planner diagnostic shape | TableCount | Mean | Allocation | What it validates |
-|---|---:|---:|---:|---|
-| `COUNT(*) FROM sys.planner_histograms` | 100 | 235.3 ns | 552 B | Virtual histogram catalog count fast path |
-| `COUNT(*) FROM sys.planner_heavy_hitters` | 100 | 227.2 ns | 552 B | Virtual heavy-hitter catalog count fast path |
-| `COUNT(*) FROM sys.planner_index_prefix_stats` | 100 | 203.2 ns | 528 B | Virtual composite-prefix catalog count fast path |
-| `EXPLAIN ESTIMATE` skewed lookup | 100 | 345.8 us | 334.83 KB | Bounded estimate diagnostics without executing user rows |
-
-## Focused Adaptive Re-Optimization Validation
-
-These May 6, 2026 rows are diagnostic proof for opt-in adaptive query re-optimization. The SQL rows measure default-disabled behavior, enabled wrapper overhead, and eligible join shapes on the benchmark seed data. The synthetic rows force the adaptive operator switch paths directly so the run records divergence and switch counters even when the normal planner already avoids a bad plan.
-
-Command:
-
-```powershell
-dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --adaptive-reoptimization
-```
-
-Source CSV:
-
-`tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/adaptive-reoptimization-20260506-073419.csv`
-
-| Adaptive shape | Throughput | P50 | P99 | Switches | What it validates |
-|---|---:|---:|---:|---:|---|
-| Disabled stable join | 251 queries/sec | 3.681 ms | 9.002 ms | 0 | Default path stays silent with no adaptive counters |
-| Enabled stable no-switch | 191 queries/sec | 4.666 ms | 9.588 ms | 0 | Opt-in wrapper overhead when thresholds avoid adaptation |
-| Stale-stat fan-out diagnostic | 48 queries/sec | 18.324 ms | 43.867 ms | 0 | Eligible stale/range workload shape on the current planner |
-| Parameter-sensitive small | 910 queries/sec | 0.747 ms | 4.448 ms | 0 | Small selective value with adaptive eligibility enabled |
-| Hash build-side diagnostic | 77 queries/sec | 12.687 ms | 22.376 ms | 0 | Eligible hash-build workload shape on the current planner |
-| Synthetic index switch | 8,651 ops/sec | 0.115 ms | 0.121 ms | 86 | Index-to-hash switch path, buffered replay, and divergence counters |
-| Synthetic hash build switch | 1,403 ops/sec | 0.594 ms | 2.246 ms | 86 | Hash build-side flip path and divergence counters |
-
-Interpretation: this feature is not a universal speedup. It should be enabled only for workloads where stale statistics or parameter-sensitive joins produce materially wrong join choices; stable, well-analyzed plans should expect no gain and some opt-in wrapper cost.
-
-Async I/O command:
-
-```powershell
-dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --async-io-closeout --repro
-```
-
-Async I/O source CSV:
-
-`tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/async-io-closeout-20260505-204638.csv`
-
-| Async I/O shape | Throughput | Classification |
-|---|---:|---|
-| SaveToFile snapshot copy | 52,762 pages/sec | Already batched through `StorageDeviceCopyBatcher` |
-| Backup snapshot copy | 8,136 pages/sec | Already batched through backup/snapshot copy helpers |
-| Restore staging | 9,996 pages/sec | Already batched through load/save staging |
-| Vacuum logical rewrite | 3,365 pages/sec | Intentionally logical through `BTreeCopyUtility` |
-| FK migration rewrite | 42,749 rows/sec | Intentionally logical through `BTreeCopyUtility` |
-| Database inspector scan | 18,600 pages/sec | Specialized diagnostic path |
-| WAL inspector scan | 2,310 frames/sec | Specialized diagnostic path over a live 20-frame WAL |
-
-## Focused Generated Collection Fast-Path Validation
-
-These April 26, 2026 rows are diagnostic proof for the opt-in source-generated collection fast path. They compare source-generated JSON payloads with generated binary direct payloads for supported document graphs. They are not promoted release-core scorecard rows; durable single-row collection writes can still be flush-bound, so these numbers mainly describe CPU and allocation wins in encode/decode and field/index-reader paths.
-
-Command:
-
-```powershell
-dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --micro --filter *GeneratedCollection*
-```
-
-Source CSVs:
-
-`BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.GeneratedCollection*Benchmarks-report.csv`
-
-| Path | Source-gen JSON | Generated binary | Gain | Allocation |
-|---|---:|---:|---:|---|
-| Encode payload | 600.1 ns | 306.2 ns | 1.96x | 552 B to 136 B |
-| Decode payload | 2,277.9 ns | 371.9 ns | 6.12x | 1,240 B to 480 B |
-| Indexed int field read | 187.23 ns | 29.74 ns | 6.30x | 0 B to 0 B |
-| Text field UTF-8 read | 185.82 ns | 27.26 ns | 6.82x | 56 B to 0 B |
-| Key match | 21.48 ns | 19.91 ns | 1.08x | 0 B to 0 B |
-
-Interpretation: generated collections are worth using when collection payload CPU, direct field extraction, or index-reader cost is visible in the profile. They should not be sold as a durable commit-throughput feature, because WAL flush policy still dominates one-row durable writes.
-
 ## Core Benchmark Map
 
 | Performance question | Published surface | Benchmark source |
@@ -421,10 +153,10 @@ Interpretation: generated collections are worth using when collection payload CP
 | Single-writer durable ingest | `B1`, `B100`, `B1000`, optional `B10000` batch rows | `--durable-sql-batching --repeat 3 --repro` |
 | Concurrent durable writes | `W4` and `W8`, `0` vs `250us`, disjoint explicit-key auto-commit | `--concurrent-write-diagnostics --repeat 3 --repro` |
 | Concurrent insert fan-in | Serialized controls, disjoint explicit keys, hot explicit right-edge, hot auto-ID | `--insert-fan-in-diagnostics --repro` |
-| Advanced optimizer close-out | Heavy hitters, histogram ranges, composite-prefix correlation, bounded join reorder | `--optimizer-closeout --repro` |
+| Advanced optimizer | Heavy hitters, histogram ranges, composite-prefix correlation, bounded join reorder | `--optimizer-closeout --repro` |
 | Public planner diagnostics | Planner histogram/heavy-hitter/prefix catalogs and bounded estimate explanations | `--micro --filter *SystemCatalogBenchmarks*Planner*`; `--micro --filter *ExplainEstimate*` |
 | Adaptive query re-optimization | Default-disabled baseline, enabled wrapper overhead, eligible join shapes, synthetic switch counters | `--adaptive-reoptimization` |
-| Async I/O batching close-out | Save/backup/restore, vacuum/FK logical rewrites, inspector/WAL scans | `--async-io-closeout --repro` |
+| Async I/O batching | Save/backup/restore, vacuum/FK logical rewrites, inspector/WAL scans | `--async-io-closeout --repro` |
 | Generated collection fast path | Generated binary payload encode/decode, direct field reads, UTF-8 text field reads, key matching | `--micro --filter *GeneratedCollection*` |
 | Numeric relationship INNER joins | INTEGER PK-to-FK key-only broad scans, payload fallback, and point-lookup cost gating | `--micro --filter *NumericRelationship*` |
 | Storage mode tradeoffs | file-backed, hybrid incremental, in-memory hot steady-state | `--hybrid-storage-mode --repeat 3 --repro` |
@@ -776,13 +508,10 @@ Promotion checklist:
 - The release guardrail result is clean.
 - The manifest points only to the approved median artifacts.
 - The generated README diff only changes benchmark numbers, source artifacts, or snapshot metadata.
-- Failed or noisy runs receive only a concise human-authored summary or external
-  evidence identifier in [HISTORY.md](HISTORY.md); generated evidence is never
-  checked in.
+- Keep generated results outside source control.
 
 Related files:
 
-- [HISTORY.md](HISTORY.md): human-authored release summaries, external evidence identifiers, and investigation notes.
 - [BENCHMARK_CATALOG.md](BENCHMARK_CATALOG.md): complete harness list and classification.
 - [SQLITE_COMPARISON.md](SQLITE_COMPARISON.md): focused same-runner CSharpDB vs SQLite comparison.
 - `release-core-manifest.json`: source-of-truth manifest for published README tables.
@@ -802,16 +531,6 @@ dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.
 
 The prepared index path currently supports non-null integral parameters in comparisons against one indexed integer column, column/star projections, optional ascending order on that column, and constant LIMIT/OFFSET. Physical INTEGER/BIGINT primary-key equality and ranges also reuse plans, including additional bounds on the same key. Equality preserves cache-only and decode-free lookup paths; ranges seek to the lower bound and stop at the upper bound without requiring a secondary index. It caches up to 256 template plans per planner, invalidates them on schema changes, and gives each execution its own parameter frame and operators. Different values do not consume additional prepared-plan entries. Unsupported shapes, parameter types, catalogs, and physical EXPLAIN capture use the ordinary planner; its value-bound cache remains limited to 64 entries. Prepared metadata reuse does not imply that every parameterized query uses this path.
 
-The physical primary-key range extension applies to direct database, explicit write-transaction and reader-session planners, including pooled ADO reads. `ReaderSession` uses frozen committed catalog metadata so roots, schemas, and counts remain consistent with its snapshot. The isolated local pooled-range comparison passed its median, allocation and P99 checks; earlier durable-write P99 diagnostics remain recorded separately. Existing prepared equality and secondary-index eligibility is unchanged. This benchmark fixture uses `Pooling=false`; see the October 4 isolated pooled-range comparison in [HISTORY.md](HISTORY.md) for the file-backed pooled measurements and their limits. Pooled queries create fresh reader planners, so their improvement comes from bounded primary-key access rather than sharing a cached plan across queries. A subsequent allocation profile found unnecessary next-leaf read-ahead after a range's upper bound; bounded cursors now avoid that speculative read while preserving traversal. The separate local follow-up in [HISTORY.md](HISTORY.md) records the short-range gains and larger-range regression checks.
+Physical primary-key ranges apply to direct database, explicit write-transaction, and reader-session planners, including pooled ADO reads. `ReaderSession` uses frozen committed catalog metadata so roots, schemas, and counts remain consistent with its snapshot. Pooled queries create fresh reader planners; bounded primary-key access does not require sharing a cached plan across queries. This benchmark fixture uses `Pooling=false`.
 
-Snapshot pagers also avoid allocating unused writer diagnostics and allocation delegates. The October 4 snapshot-pager follow-up in [HISTORY.md](HISTORY.md) records the isolated component savings and paired pooled-query results, including the modest timing changes and qualification limits.
-
-Reader planners allocate cache containers and adaptive diagnostics only when used. The October 4 planner-setup follow-up in [HISTORY.md](HISTORY.md) records a further 10.01% allocation reduction and 5.36% lower observed median latency for four-row pooled prepared ranges. Larger ranges, arithmetic projections, and self joins passed the declared regression checks; individual tail timings still varied. Planners remain bound to individual reader snapshots. The same validation found and fixed stale trigger bodies after replacement when fast inserts bypassed the normal schema-cache check.
-
-Ordinary SELECTs with arithmetic projections and join-local predicates can also use bounded physical integer primary-key scans after existing lookup selection fails. Residual filters run before sorting and LIMIT. The October 4 ordinary-range follow-up in [HISTORY.md](HISTORY.md) measured 94.91% lower median latency and 89.32% less allocation for its four-row arithmetic/join fixtures. Two prepared controls exceeded the original median regression limit in one pair; a separate focused comparison did not reproduce a persistent slowdown. Both results and their limits are retained.
-
-The lazy-table-scan change committed in `d55c5d98` defers 64-row buffers until batch access. The October 4 follow-up in [HISTORY.md](HISTORY.md) records a further 12.89% allocation reduction for its small expression/join fixtures. The original comparison and focused check failed latency checks. A later three-arm diagnostic with matched compiler inputs, one case per process, and a shared fixture passed its fixed checks: the large prepared-range slowdown did not reproduce, and the expression-only allocation reduction was about 13.34%. The earlier cause remains unresolved, and this limited diagnostic does not establish a latency improvement or release-wide qualification.
-
-A subsequent wide-range profile led to repairing unreachable whole-batch forwarding in `LimitOperator`. Owned fallback buffers remain separate from borrowed batches, preserving retention and partial-tail behavior. The October 4 LIMIT follow-up in [HISTORY.md](HISTORY.md) records 7.02% lower observed median latency for 4,096-row pooled primary-key reads across two pairs. All nine cases passed the fixed regression checks; individual P99 measurements still varied. The result is local evidence for this bounded change, with release-wide qualification still open.
-
-For nullable indexed columns, supported comparison predicates exclude NULL rows, allowing ordered index access without losing matching rows. Broad equality values still consult the existing selectivity guard. Tiny LIMIT windows without an offset use the row boundary, and index-scan/limit batch buffers are allocated when requested. The fixture uses an in-memory database; use controlled file-backed paired runs when qualifying a release, and distinguish improvements from plan reuse from improvements in the chosen access path and result buffering.
+Ordinary SELECTs with arithmetic projections and join-local predicates can use bounded physical integer primary-key scans when lookup selection does not apply. Residual filters run before sorting and LIMIT. Range cursors stop at their upper bound without unnecessary next-leaf reads. Table scans allocate batch buffers only when batch access is requested, and LIMIT preserves ownership when forwarding or partially consuming a batch.

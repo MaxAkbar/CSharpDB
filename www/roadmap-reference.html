@@ -457,7 +457,7 @@
                 </tr>
                 <tr>
                 <td><strong>Async I/O batching</strong></td>
-                <td>Done for the current phase: WAL frame-chunk writes, chunked checkpoint page copies, shared snapshot/export batching, reusable B-tree copy utilities, and the close-out audit now cover the main storage and maintenance write paths; future work is limited to specialized diagnostics or maintenance-path tuning</td>
+                <td>WAL frame-chunk writes, chunked checkpoint page copies, shared snapshot/export batching, and reusable B-tree copy utilities batch the main storage and maintenance write paths</td>
                 <td>Done</td>
                 </tr>
                 <tr>

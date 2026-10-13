@@ -74,7 +74,7 @@ var options = new DatabaseOptions()
 await using var db = await Database.OpenAsync("ingest.cdb", options);
 ```
 
-`UseWriteOptimizedPreset()` is the current recommended opt-in preset for file-backed write-heavy workloads. It keeps the existing cache and index configuration, raises the auto-checkpoint frame threshold to `4096`, and runs auto-checkpoints in background slices instead of blocking the triggering commit. `PagerOptions.AutoCheckpointMaxPagesPerStep` controls how much work each background slice performs; the default remains `64` pages. Treat this as the stable baseline preset, not a promise that the frame-count/background row is always the top line in every harness. In the latest March 27 durable SQL batching median, auto-commit single-row SQL on this preset measured about `270.5 ops/sec`, and the analyzed-table row measured about `267.8 ops/sec`. In the stable March 28 single-writer diagnostics rerun, the preset's `FrameCount(4096)+Background(256 pages/step)` row measured about `275.9 ops/sec`, effectively tied with the top single-writer rows (`FrameCount(4096)` at `276.3` and `WalSize(8 MiB)` at `273.8`) while still keeping checkpoint work off the triggering commit.
+`UseWriteOptimizedPreset()` is the recommended opt-in preset for file-backed write-heavy workloads. It keeps the existing cache and index configuration, raises the auto-checkpoint frame threshold to `4096`, and runs auto-checkpoints in background slices instead of blocking the triggering commit. `PagerOptions.AutoCheckpointMaxPagesPerStep` controls each slice; the default is `64` pages. Measure throughput and commit latency with your application's transaction shape.
 
 If you want to experiment with moving advisory statistics persistence off the ordinary durable commit path, the storage builder also exposes `UseLowLatencyDurableWritePreset()`:
 
@@ -90,7 +90,7 @@ var options = new DatabaseOptions()
 await using var db = await Database.OpenAsync("ingest.cdb", options);
 ```
 
-Treat this as a measure-first preset rather than a new baseline. The preset now deliberately separates exact committed-row durability from advisory planner-stat persistence: committed user rows remain WAL-durable per commit, while `sys.table_stats.row_count_is_exact` and stale column-stat tracking make any deferred planner metadata explicit after reopen/recovery. In the latest `durable-sql-batching` median-of-3 run, analyzed single-row durable SQL measured about `267.8 ops/sec` on `UseWriteOptimizedPreset()` and about `261.4 ops/sec` on `UseLowLatencyDurableWritePreset()`. The current biggest durable ingest win is still explicit transaction batching, not the low-latency preset by itself.
+Measure `UseLowLatencyDurableWritePreset()` on your workload before selecting it. It separates committed-row durability from advisory planner-stat persistence: committed user rows remain WAL-durable per commit, while `sys.table_stats.row_count_is_exact` and stale column-stat tracking make deferred metadata explicit after recovery. Explicit transaction batching remains an important option for durable ingest.
 
 If you want to experiment with durable group commit, the storage builder now exposes `UseDurableGroupCommit(...)`:
 
@@ -107,13 +107,13 @@ var options = new DatabaseOptions()
 await using var db = await Database.OpenAsync("ingest.cdb", options);
 ```
 
-Keep this at `TimeSpan.Zero` unless you have benchmark data for your workload. The delay only affects file-backed `Durable` commits and trades commit latency for more opportunity to share one OS flush across multiple writers. The flush leader now skips or short-circuits that wait once the pending commit queue is already large enough, so the option behaves more like "batch briefly when lightly contended" than "always sleep before every durable flush." In the April 10, 2026 shared-engine closeout rerun, the best no-preallocation rows were effectively tied rather than clearly batch-window-driven: `W4` landed at about `468.1-468.3 commits/sec` with `0` or `500us`, and `W8` landed at about `466.7-467.3 commits/sec` with `0` or `250us`. Treat this as an opt-in knob for measured contention rather than a new default. When you test it, look at queue depth, commits per flush, and latency percentiles in addition to raw throughput. `UseDurableCommitBatchWindow(...)` remains available as a compatibility alias for the same setting.
+Keep this at `TimeSpan.Zero` unless your workload benefits from group commit. The delay affects file-backed `Durable` commits and trades commit latency for opportunities to share one OS flush across multiple writers. The flush leader can end the wait early when the pending commit queue is already large enough. Measure queue depth, commits per flush, and latency percentiles along with throughput. `UseDurableCommitBatchWindow(...)` is a compatibility alias.
 
-The current engine shape is more nuanced than the earlier phase-3 guidance. After the April 11, 2026 phase-4 fan-in work, shared-`Database` implicit auto-commit non-insert SQL writes no longer hold the engine write gate all the way through `PagerCommitResult` completion. Those `UPDATE` / `DELETE` / other non-insert auto-commit writes now run on isolated `WriteTransaction` state, so overlapping writers can build a real pending WAL commit queue. In the focused `commit-fan-in-diagnostics-20260411-141949.csv` rerun, shared auto-commit disjoint updates reached about `525 commits/sec` / `1.99 commitsPerFlush` at `W4` and about `743 commits/sec` / `3.37 commitsPerFlush` at `W8`.
+Shared-`Database` implicit auto-commit `UPDATE`, `DELETE`, and other non-insert SQL writes use isolated `WriteTransaction` state while their durable commits complete. Overlapping writers can build a pending WAL commit queue and share a durable flush.
 
-That does not mean every shared auto-commit workload now coalesces equally. The dedicated `insert-fan-in-diagnostics-20260411-165557.csv` rerun shows the remaining boundary clearly: hot insert workloads stayed in a narrow `413-458 commits/sec` band with `commitsPerFlush = 1.00` across shared auto-commit and explicit `WriteTransaction` variants. The shared row-id reservation pass removed the earlier duplicate-key failures from the explicit auto-generated-id rows, but it still did not unlock commit fan-in for hot inserts. Treat `UseDurableGroupCommit(...)` as a measured knob for overlapping explicit `WriteTransaction` commits plus shared auto-commit non-insert contention, not as a guaranteed throughput switch for hot single-row insert loops. For insert-heavy workloads, application-level batching and explicit transaction shape are still the first levers.
+Commit fan-in depends on key contention and transaction shape. Hot single-row inserts can serialize even when several writers are active. For insert-heavy workloads, start with application-level batching and explicit transactions, then measure group commit under representative concurrency.
 
-If you want to benchmark the shared auto-commit `INSERT` path itself, the engine-level switch is `DatabaseOptions.ImplicitInsertExecutionMode`. The default `Serialized` mode is still the right baseline for hot right-edge insert workloads. `ConcurrentWriteTransactions` routes each shared auto-commit `INSERT` through isolated `WriteTransaction` state, which can be worth measuring for disjoint-key insert workloads, but the current April 11 hot-insert rerun still stayed in the same `413-458 commits/sec` band and did not unlock `commitsPerFlush > 1.00` on the measured runner.
+`DatabaseOptions.ImplicitInsertExecutionMode` controls the shared auto-commit `INSERT` path. The default `Serialized` mode provides a baseline for hot right-edge insert workloads. `ConcurrentWriteTransactions` routes inserts through isolated `WriteTransaction` state and can be useful for disjoint-key workloads. Compare both modes using your application's key distribution.
 
 ```csharp
 using CSharpDB.Engine;
@@ -142,7 +142,7 @@ var options = new DatabaseOptions()
 await using var db = await Database.OpenAsync("ingest.cdb", options);
 ```
 
-Keep this at `0` by default. In the April 10, 2026 shared-engine closeout rerun it regressed the `8`-writer rows on the measured runner: `WalPrealloc(1MiB)` landed at about `420.0-420.9 commits/sec`, below the `466.7-467.3` no-preallocation rows. Treat it as an experimental opt-in for specific local-disk ingest workloads rather than a general preset.
+Keep WAL preallocation at `0` by default. Evaluate it on your own disk and workload before enabling it; reducing file extensions can trade additional allocation and flush costs against throughput.
 
 If you are trying to reproduce the concurrent durable-write benchmark shape, the key detail is that the writers share one `Database` instance in-process:
 
@@ -268,15 +268,15 @@ for (int writerId = 0; writerId < transactionalWriters.Length; writerId++)
 await Task.WhenAll(transactionalWriters);
 ```
 
-For better write-heavy numbers, start with these rules:
+For write-heavy workloads:
 
-- `UseWriteOptimizedPreset()` first. It is the baseline recommendation for file-backed durable ingest.
-- If your workload can batch multiple logical writes into one explicit transaction, do that before tuning microsecond batch windows. In the latest durable SQL batching median, that scaled from about `270 rows/sec` at auto-commit to about `2.7K`, `27K`, and `197K rows/sec` at `10`, `100`, and `1000` rows per commit.
-- If your shared workload is mostly low-conflict `UPDATE` / `DELETE` traffic on one `Database`, benchmark the current shared auto-commit path directly. The latest `commit-fan-in-diagnostics` rerun reached about `743 commits/sec` / `3.37 commitsPerFlush` at `W8`, effectively in the same band as the explicit `WriteTransaction` disjoint-update row on the same runner.
-- If you have hot single-row `INSERT` loops, treat batching or explicit transaction shape as the first levers. The current insert-fan-in rerun still kept shared auto-commit and explicit `WriteTransaction` inserts in the same `413-458 commits/sec` band with `commitsPerFlush = 1.00`.
-- If you have `8` in-process durable writers issuing shared auto-commit inserts, benchmark `TimeSpan.Zero` and `TimeSpan.FromMilliseconds(0.25)` first. Those rows were effectively tied in the latest closeout rerun, and `UseWalPreallocationChunkBytes(1 * 1024 * 1024)` regressed on that runner.
-- If you have `4` in-process durable writers issuing shared auto-commit inserts, benchmark `TimeSpan.Zero` and `TimeSpan.FromMilliseconds(0.5)` first. Those rows were effectively tied at the top of the latest closeout rerun.
-- Measure `UseLowLatencyDurableWritePreset()` on your own workload rather than assuming it helps. On the current perf runner it did not beat `UseWriteOptimizedPreset()` for analyzed single-row durable SQL.
+- Start with `UseWriteOptimizedPreset()` for file-backed durable ingest.
+- Batch multiple logical writes in one explicit transaction before tuning commit windows.
+- Measure low-conflict `UPDATE` / `DELETE` workloads and hot `INSERT` workloads separately; their contention patterns differ.
+- Compare serialized and concurrent insert execution for your key distribution.
+- Start with a zero group-commit window, then measure small windows such as `TimeSpan.FromMilliseconds(0.25)` or `TimeSpan.FromMilliseconds(0.5)` under concurrent writes.
+- Leave WAL preallocation disabled unless measurements on your storage justify it.
+- Evaluate `UseLowLatencyDurableWritePreset()` on your own workload before adopting it.
 
 ### Recommended Read/Write Topology
 

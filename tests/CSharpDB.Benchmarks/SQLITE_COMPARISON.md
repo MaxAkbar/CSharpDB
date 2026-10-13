@@ -7,7 +7,7 @@ This page is the focused same-runner comparison between CSharpDB and local SQLit
 - CSharpDB rows are durable and file-backed unless a row says otherwise.
 - SQLite rows use `Microsoft.Data.Sqlite/10.0.7`, `journal_mode=WAL`, `synchronous=FULL`, private cache, and pooling disabled.
 - Ratios are `CSharpDB throughput / SQLite throughput`; values above `1.00x` mean CSharpDB is faster for that row.
-- Published comparison rows come only from approved release artifacts. Failed or diagnostic runs stay in [HISTORY.md](HISTORY.md).
+- Published comparison rows come only from approved release artifacts. Keep generated results outside source control.
 - This is a local same-machine comparison, not a universal database ranking.
 
 Current snapshot:

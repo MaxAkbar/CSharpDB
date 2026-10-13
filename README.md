@@ -38,7 +38,7 @@
 |:-:|:-:|:-:|:-:|
 | Collection point reads | SQL, 8 readers, reused sessions | Durable `InsertBatch` B10000 | Concurrent durable writes, 8 writers, 250us window |
 
-<sub>Intel i9-11900K, Windows 11, .NET 10.0.12. Measured on <a href="https://github.com/MaxAkbar/CSharpDB/commit/df84a7216bb81b136c7272e0847577c33fd26883">df84a72</a>, before the final v4.6.6 fixes. Full methodology: <a href="tests/CSharpDB.Benchmarks/README.md">benchmark suite</a>.</sub>
+<sub>Intel i9-11900K, Windows 11, .NET 10.0.12. Measured on <a href="https://github.com/MaxAkbar/CSharpDB/commit/df84a7216bb81b136c7272e0847577c33fd26883">df84a72</a>. Full methodology: <a href="tests/CSharpDB.Benchmarks/README.md">benchmark suite</a>.</sub>
 
 ## Durable API Top Lines
 

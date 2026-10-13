@@ -272,13 +272,13 @@ What to learn here:
 
 ## How The Files Map To The Story
 
-- [schema.sql](C:/Users/maxim/source/Code/CSharpDB/samples/fulfillment-hub/schema.sql) creates the relational model, views, triggers, and base snapshot
-- [procedures.json](C:/Users/maxim/source/Code/CSharpDB/samples/fulfillment-hub/procedures.json) defines the main operational actions
-- [saved-queries.json](C:/Users/maxim/source/Code/CSharpDB/samples/fulfillment-hub/saved-queries.json) stores the queue-style queries that make sense in Admin
-- [queries.sql](C:/Users/maxim/source/Code/CSharpDB/samples/fulfillment-hub/queries.sql) is the workbook for exploration and learning
-- [pipelines](C:/Users/maxim/source/Code/CSharpDB/samples/fulfillment-hub/pipelines/low-stock-export.json) contains stored pipeline definitions
-- [imports](C:/Users/maxim/source/Code/CSharpDB/samples/fulfillment-hub/imports/supplier-receipts.csv) contains source files for those pipelines
-- [Program.cs](C:/Users/maxim/source/Code/CSharpDB/samples/fulfillment-hub/Program.cs) seeds everything that is not pure DDL: forms, reports, pipeline packages, collections, and full-text indexes
+- [schema.sql](schema.sql) creates the relational model, views, triggers, and base snapshot
+- [procedures.json](procedures.json) defines the main operational actions
+- [saved-queries.json](saved-queries.json) stores the queue-style queries that make sense in Admin
+- [queries.sql](queries.sql) is the workbook for exploration and learning
+- [pipelines](pipelines/low-stock-export.json) contains stored pipeline definitions
+- [imports](imports/supplier-receipts.csv) contains source files for those pipelines
+- [Program.cs](Program.cs) seeds everything that is not pure DDL: forms, reports, pipeline packages, collections, and full-text indexes
 
 ## A Good Learning Loop
 
