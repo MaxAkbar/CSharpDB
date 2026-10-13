@@ -32,81 +32,52 @@
 
 ## Performance at a Glance
 
-| 1.99M gets/sec | 9.68M COUNTs/sec | 799.29K rows/sec | 890 commits/sec |
+**Benchmarks recorded: October 9, 2026.**
+
+| 2.20M gets/sec | 9.11M COUNTs/sec | 966.62K rows/sec | 1,056.3 commits/sec |
 |:-:|:-:|:-:|:-:|
-| Collection point reads | Concurrent reader burst (8x reused) | Durable `InsertBatch` B10000 | Concurrent durable writes |
+| Collection point reads | SQL, 8 readers, reused sessions | Durable `InsertBatch` B10000 | Concurrent durable writes, 8 writers, 250us window |
 
-<sub>Intel i9-11900K, 16 logical cores, Windows 10.0.26300, .NET SDK 10.0.203, .NET runtime 10.0.7. Snapshot promoted from the May 6, 2026 release-core suite; latest release guardrail compare passed May 6, 2026 with PASS=187, WARN=0, SKIP=0, FAIL=0. Full results live in the <a href="tests/CSharpDB.Benchmarks/README.md">benchmark suite</a>.</sub>
-
----
+<sub>Intel i9-11900K, Windows 11, .NET 10.0.12. Measured on <a href="https://github.com/MaxAkbar/CSharpDB/commit/df84a7216bb81b136c7272e0847577c33fd26883">df84a72</a>, before the final v4.6.6 fixes. Full methodology: <a href="tests/CSharpDB.Benchmarks/README.md">benchmark suite</a>.</sub>
 
 ## Durable API Top Lines
 
-Default CSharpDB file-backed benchmarks are fully durable: WAL fsync-on-commit unless a row explicitly says otherwise. In-memory rows show the same API paths without disk durability.
+Values are medians of three runs. File-backed and hybrid writes include WAL fsync-on-commit; in-memory rows exclude disk durability.
 
 | Surface | Single write | Batch x100 | Point read | Concurrent read |
 |---|---:|---:|---:|---:|
-| SQL file-backed | 267.1 ops/sec | 25.56K rows/sec | 1.48M ops/sec | 9.68M COUNTs/sec |
-| SQL hybrid incremental-durable | 276.1 ops/sec | 26.55K rows/sec | 1.47M ops/sec | 10.04M COUNTs/sec |
-| SQL in-memory | 259.48K ops/sec | 934.22K rows/sec | 1.49M ops/sec | 10.26M COUNTs/sec |
-| Collection file-backed | 265.7 ops/sec | 24.53K docs/sec | 1.99M ops/sec | - |
-| Collection hybrid incremental-durable | 276.9 ops/sec | 25.75K docs/sec | 2.02M ops/sec | - |
-| Collection in-memory | 262.14K ops/sec | 969.55K docs/sec | 2.02M ops/sec | - |
-
-<sub>Source: `master-table-20260506-024609-median-of-3.csv` from the May 6, 2026 release-core snapshot. Full methodology and storage-mode detail live in the <a href="tests/CSharpDB.Benchmarks/README.md">benchmark suite README</a>.</sub>
-
----
+| SQL file-backed | 283.5 ops/sec | 27.24K rows/sec | 1.63M ops/sec | 9.11M COUNTs/sec |
+| SQL hybrid incremental-durable | 289.9 ops/sec | 27.77K rows/sec | 1.66M ops/sec | 8.90M COUNTs/sec |
+| SQL in-memory | 307.94K ops/sec | 1.06M rows/sec | 1.62M ops/sec | 9.07M COUNTs/sec |
+| Collection file-backed | 287.7 ops/sec | 27.78K docs/sec | 2.20M ops/sec | — |
+| Collection hybrid incremental-durable | 295.0 ops/sec | 27.42K docs/sec | 2.25M ops/sec | — |
+| Collection in-memory | 322.14K ops/sec | 1.03M docs/sec | 2.22M ops/sec | — |
 
 ## Concurrent Durable Writes
 
-The current release-core concurrent write rows measure the intended shared-insert shape: one shared `Database`, disjoint explicit key ranges, auto-commit SQL inserts, and `ConcurrentWriteTransactions` enabled. The numbers below are total durable commits/sec across all writers combined.
+One shared `Database`, disjoint explicit key ranges, auto-commit SQL inserts, and `ConcurrentWriteTransactions` enabled. Throughput is total durable commits/sec across all writers combined.
 
-| Workload | Writers | Commit window | Durable Commits/sec | Commits/flush | Notes |
-|----------|--------:|--------------:|--------------------:|--------------:|-------|
-| Shared auto-commit `INSERT` | 4 | `0` | 247.0 | 1.00 | One durable flush per commit |
-| Shared auto-commit `INSERT` | 4 | `250us` | 463.4 | 1.99 | Group commit roughly doubles throughput |
-| Shared auto-commit `INSERT` | 8 | `0` | 239.2 | 1.00 | Still flush-bound with no commit window |
-| Shared auto-commit `INSERT` | 8 | `250us` | 890.1 | 3.94 | Current release-core headline row |
-
-Focused hot insert fan-in diagnostics cover the newer right-edge and auto-ID shapes that are not part of the release-core scorecard yet:
-
-| Insert shape | Writers/window | Durable Commits/sec | Commits/flush |
-|---|---:|---:|---:|
-| Serialized explicit hot right-edge | `W8 + 250us` | 278.4 | 1.00 |
-| Concurrent explicit hot right-edge | `W8 + 250us` | 910.3 | 3.33 |
-| Concurrent auto-ID hot right-edge | `W8 + 250us` | 913.1 | 3.34 |
-| Concurrent explicit disjoint ranges | `W8 + 250us` | 1,049.6 | 3.96 |
-
-<sub>Sources: release-core `concurrent-write-diagnostics-20260506-032735-median-of-3.csv`; focused insert fan-in diagnostic `insert-fan-in-diagnostics-20260505-233424.csv`. Focused rows remain diagnostic until the release-core suite includes those shapes directly. Full methodology and tuning notes live in the <a href="tests/CSharpDB.Benchmarks/README.md">benchmark suite README</a>.</sub>
-
----
+| Workload | Writers | Commit window | Durable commits/sec | Commits/flush |
+|---|---:|---:|---:|---:|
+| Shared auto-commit `INSERT` | 4 | `0` | 279.1 | 1.00 |
+| Shared auto-commit `INSERT` | 4 | `250us` | 550.8 | 2.00 |
+| Shared auto-commit `INSERT` | 8 | `0` | 274.6 | 1.00 |
+| Shared auto-commit `INSERT` | 8 | `250us` | 1,056.3 | 3.90 |
 
 ## Local SQLite Reference
 
-Same-runner SQLite rows use Microsoft.Data.Sqlite 10.0.7 with WAL + `synchronous=FULL`. They are comparison points, not universal claims.
+SQLite uses Microsoft.Data.Sqlite 10.0.12 with WAL + `synchronous=FULL` on the same machine.
 
 | Workload | CSharpDB | SQLite WAL+FULL |
 |---|---:|---:|
-| Durable prepared bulk insert B1000 | 211.99K rows/sec | 155.66K rows/sec |
-| SQL point lookup | 1.48M ops/sec | 93.91K ops/sec |
-
-<sub>Source: `sqlite-compare-20260506-035128-median-of-3.csv` from the May 6, 2026 release-core snapshot.</sub>
+| Durable prepared bulk insert B1000 | 241.24K rows/sec | 215.27K rows/sec |
+| SQL point lookup | 1.63M ops/sec | 199.96K ops/sec |
 
 ---
 
 ## Generated Collection Fast Path
 
-The source-generated collection path is opt-in through `GetGeneratedCollectionAsync<T>(...)`. It mainly improves collection payload CPU, direct field extraction, and index-reader paths; one-row durable writes can still be WAL-flush-bound.
-
-| Path | Source-gen JSON | Generated binary | Gain | Allocation |
-|---|---:|---:|---:|---|
-| Encode payload | 600.1 ns | 306.2 ns | 1.96x | 552 B to 136 B |
-| Decode payload | 2,277.9 ns | 371.9 ns | 6.12x | 1,240 B to 480 B |
-| Indexed int field read | 187.23 ns | 29.74 ns | 6.30x | 0 B to 0 B |
-| Text field UTF-8 read | 185.82 ns | 27.26 ns | 6.82x | 56 B to 0 B |
-| Key match | 21.48 ns | 19.91 ns | 1.08x | 0 B to 0 B |
-
-<sub>Source: `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.GeneratedCollection*Benchmarks-report.csv`. These rows are diagnostic microbenchmarks, not release-core scorecard rows.</sub>
+The source-generated collection path is opt-in through `GetGeneratedCollectionAsync<T>(...)`. It improves collection payload CPU, direct field extraction, and index-reader paths; one-row durable writes can still be WAL-flush-bound.
 
 ---
 
