@@ -67,6 +67,26 @@ public sealed class CSharpDbCommand : DbCommand
 
     public override async Task<object?> ExecuteScalarAsync(CancellationToken cancellationToken)
     {
+        var connection = (CSharpDbConnection)(DbConnection
+            ?? throw new InvalidOperationException("Connection is not set."));
+        if (connection.GetSession() is RemoteDatabaseSession remote
+            && !IsTransactionControl(CommandText, out _))
+        {
+            using AdoCommandObservation? observation = connection.StartCommandObservation(CommandText);
+            try
+            {
+                string sql = SqlParameterBinder.Bind(CommandText, _parameters);
+                return await remote.ExecuteScalarAsync(sql, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                observation?.FailBeforeDispatch(ex);
+                if (ex is CSharpDbException databaseException)
+                    throw new CSharpDbDataException(databaseException);
+                throw;
+            }
+        }
+
         await using var result = await ExecuteQueryAsync(cancellationToken);
         if (result.IsQuery &&
             result.Schema.Length > 0 &&
@@ -108,12 +128,7 @@ public sealed class CSharpDbCommand : DbCommand
         var connection = (CSharpDbConnection)(DbConnection
             ?? throw new InvalidOperationException("Connection is not set."));
         var session = connection.GetSession();
-        string normalizedCommand = CommandText.Trim().TrimEnd(';').Trim();
-        bool isTransactionControl =
-            normalizedCommand.Equals("START TRANSACTION", StringComparison.OrdinalIgnoreCase)
-            || normalizedCommand.Equals("BEGIN TRANSACTION", StringComparison.OrdinalIgnoreCase)
-            || normalizedCommand.Equals("COMMIT", StringComparison.OrdinalIgnoreCase)
-            || normalizedCommand.Equals("ROLLBACK", StringComparison.OrdinalIgnoreCase);
+        bool isTransactionControl = IsTransactionControl(CommandText, out string normalizedCommand);
         using AdoCommandObservation? observation = isTransactionControl
             ? null
             : connection.StartCommandObservation(CommandText);
@@ -169,6 +184,15 @@ public sealed class CSharpDbCommand : DbCommand
                 throw new CSharpDbDataException(databaseException);
             throw;
         }
+    }
+
+    private static bool IsTransactionControl(string commandText, out string normalizedCommand)
+    {
+        normalizedCommand = commandText.Trim().TrimEnd(';').Trim();
+        return normalizedCommand.Equals("START TRANSACTION", StringComparison.OrdinalIgnoreCase)
+            || normalizedCommand.Equals("BEGIN TRANSACTION", StringComparison.OrdinalIgnoreCase)
+            || normalizedCommand.Equals("COMMIT", StringComparison.OrdinalIgnoreCase)
+            || normalizedCommand.Equals("ROLLBACK", StringComparison.OrdinalIgnoreCase);
     }
 
     public override void Cancel() { /* no-op */ }

@@ -2,6 +2,8 @@ using CSharpDB.Observability;
 
 namespace CSharpDB.Observability.Tests;
 
+// Exact callback counts require isolation from other process-wide listener users.
+[Collection(MetricsContractCollection.Name)]
 public sealed class OperationScopeTests
 {
     [Fact]

@@ -25,6 +25,8 @@ public sealed partial class CSharpDbConnection : DbConnection
     // covering the normal ADO.NET pattern of reusing one configured string.
     private static readonly ConditionalWeakTable<string, SharedPooledOpenPlan>
         s_sharedPooledOpenPlans = new();
+    private static readonly ConditionalWeakTable<string, SharedRemoteOpenPlan>
+        s_sharedRemoteOpenPlans = new();
 
     private string _connectionString = "";
     private CSharpDbConnectionStringBuilder? _connectionStringBuilder;
@@ -144,22 +146,31 @@ public sealed partial class CSharpDbConnection : DbConnection
         IDisposable? lifecycleBoundary = null;
         try
         {
-            SharedPooledOpenPlan? sharedPooledPlan = GetSharedPooledOpenPlan();
-            if (sharedPooledPlan is not null)
+            if (CanShareRemoteOpenPlan() &&
+                s_sharedRemoteOpenPlans.TryGetValue(_connectionString, out var remotePlan))
             {
-                lifecycleBoundary = EnterDatabaseOpenBoundary(
-                    sharedPooledPlan.Configuration.RuntimeDirectDatabaseOptions);
-                _session = await OpenPreparedPooledSessionAsync(
-                    sharedPooledPlan,
-                    cancellationToken);
+                _session = new RemoteDatabaseSession(await CSharpDbClient.RentAsync(
+                    remotePlan.Options, remotePlan.MaxPoolSize, cancellationToken));
             }
             else
             {
-                ConnectionOpenPlan plan = GetConnectionOpenPlan();
-                TryCacheSharedPooledOpenPlan(plan);
-                lifecycleBoundary = EnterDatabaseOpenBoundary(
-                    plan.Embedded?.Configuration.RuntimeDirectDatabaseOptions);
-                _session = await OpenConfiguredSessionAsync(plan, cancellationToken);
+                SharedPooledOpenPlan? sharedPooledPlan = GetSharedPooledOpenPlan();
+                if (sharedPooledPlan is not null)
+                {
+                    lifecycleBoundary = EnterDatabaseOpenBoundary(
+                        sharedPooledPlan.Configuration.RuntimeDirectDatabaseOptions);
+                    _session = await OpenPreparedPooledSessionAsync(
+                        sharedPooledPlan,
+                        cancellationToken);
+                }
+                else
+                {
+                    ConnectionOpenPlan plan = GetConnectionOpenPlan();
+                    TryCacheSharedPooledOpenPlan(plan);
+                    lifecycleBoundary = EnterDatabaseOpenBoundary(
+                        plan.Embedded?.Configuration.RuntimeDirectDatabaseOptions);
+                    _session = await OpenConfiguredSessionAsync(plan, cancellationToken);
+                }
             }
 
             CacheCommandObservabilityOptionsSnapshot(
@@ -263,6 +274,11 @@ public sealed partial class CSharpDbConnection : DbConnection
     public static async ValueTask ClearPoolAsync(string connectionString)
     {
         var builder = new CSharpDbConnectionStringBuilder(connectionString);
+        if (!string.IsNullOrWhiteSpace(builder.Endpoint))
+        {
+            await CSharpDbClient.ClearPoolAsync(builder.Endpoint.Trim());
+            return;
+        }
         if (string.IsNullOrWhiteSpace(builder.DataSource))
             return;
 
@@ -298,6 +314,7 @@ public sealed partial class CSharpDbConnection : DbConnection
     {
         await CSharpDbConnectionPoolRegistry.ClearAllAsync();
         await SharedMemoryDatabaseRegistry.ClearAllAsync();
+        await CSharpDbClient.ClearAllPoolsAsync();
     }
 
     public async ValueTask SaveToFileAsync(string filePath, CancellationToken cancellationToken = default)
@@ -707,17 +724,29 @@ public sealed partial class CSharpDbConnection : DbConnection
         if (!string.IsNullOrWhiteSpace(builder.LoadFrom))
             throw new InvalidOperationException("Load From is only supported for embedded in-memory data sources.");
 
-        if (builder.Pooling)
-            throw new InvalidOperationException("Pooling is not supported for daemon-backed connections.");
+        if (builder.Pooling && transport != CSharpDbTransport.Grpc)
+            throw new InvalidOperationException("Remote pooling is currently supported only for the Grpc transport.");
 
         string endpoint = builder.Endpoint.Trim();
-        ICSharpDbClient client = await OpenClientAsync(new CSharpDbClientOptions
+        var options = new CSharpDbClientOptions
         {
             Transport = transport,
             Endpoint = endpoint,
             HttpClient = TransportHttpClient,
+            GrpcMode = builder.GrpcMode ?? CSharpDbGrpcMode.Auto,
+            GrpcCallMode = builder.GrpcCallMode ?? CSharpDbGrpcCallMode.Unary,
             RouteContext = BuildRouteContext(builder),
-        }, cancellationToken);
+        };
+
+        if (builder.Pooling)
+        {
+            int maxPoolSize = builder.MaxPoolSize;
+            ICSharpDbClient rented = await CSharpDbClient.RentAsync(options, maxPoolSize, cancellationToken);
+            if (CanShareRemoteOpenPlan())
+                s_sharedRemoteOpenPlans.GetValue(_connectionString, _ => new SharedRemoteOpenPlan(options, maxPoolSize));
+            return new RemoteDatabaseSession(rented);
+        }
+        ICSharpDbClient client = await OpenClientAsync(options, cancellationToken);
 
         return new RemoteDatabaseSession(client);
     }
@@ -739,6 +768,12 @@ public sealed partial class CSharpDbConnection : DbConnection
 
     private CSharpDbConnectionStringBuilder GetConnectionStringBuilder()
         => _connectionStringBuilder ??= new CSharpDbConnectionStringBuilder(_connectionString);
+
+    private bool CanShareRemoteOpenPlan()
+        => !string.IsNullOrEmpty(_connectionString) && TransportHttpClient is null &&
+           DirectDatabaseOptions is null && HybridDatabaseOptions is null;
+
+    private sealed record SharedRemoteOpenPlan(CSharpDbClientOptions Options, int MaxPoolSize);
 
     private SharedPooledOpenPlan? GetSharedPooledOpenPlan()
     {
@@ -827,6 +862,12 @@ public sealed partial class CSharpDbConnection : DbConnection
         CSharpDbConnectionStringBuilder builder = GetConnectionStringBuilder();
         string? currentDirectoryKey = GetCurrentDirectoryCacheKey(builder);
         CSharpDbTransport? configuredTransport = ParseTransportOrNull(builder.Transport);
+        if (builder.GrpcCallMode == CSharpDbGrpcCallMode.Streaming &&
+            (configuredTransport != CSharpDbTransport.Grpc || builder.GrpcMode != CSharpDbGrpcMode.Native))
+            throw new InvalidOperationException("Streaming gRPC requires Transport=Grpc and Grpc Mode=Native.");
+        if (builder.GrpcMode is { } grpcMode &&
+            grpcMode != CSharpDbGrpcMode.Auto && configuredTransport != CSharpDbTransport.Grpc)
+            throw new InvalidOperationException("Grpc Mode is only supported for the Grpc transport.");
         bool hasEmbeddedTuning = CSharpDbEmbeddedConfigurationResolver.HasRequestedTuning(
             builder,
             DirectDatabaseOptions,

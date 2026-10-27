@@ -571,26 +571,76 @@ public static class GrpcModelMapper
         };
 
     public static SqlExecutionResultMessage ToMessage(SqlExecutionResult value)
+        => ToMessage(value, includeMetadata: true, allowCompactScalarInt64: false);
+
+    public static SqlExecutionResultMessage ToMessage(SqlExecutionResult value, bool includeMetadata)
+        => ToMessage(value, includeMetadata, allowCompactScalarInt64: false);
+
+    public static SqlExecutionResultMessage ToMessage(SqlExecutionResult value, bool includeMetadata, bool allowCompactScalarInt64)
     {
+        long scalar = 0;
+        bool compact = allowCompactScalarInt64 && TryGetSingleInt64Result(value, out scalar);
         var message = new SqlExecutionResultMessage
         {
             IsQuery = value.IsQuery,
-            ColumnNames = value.ColumnNames is null ? null : ToStringList(value.ColumnNames),
-            ColumnTypes = value.ColumnTypes is null ? null : ToStringList(value.ColumnTypes),
-            ColumnNullability = value.ColumnNullability is null
+            ColumnNames = !includeMetadata || value.ColumnNames is null ? null : ToStringList(value.ColumnNames),
+            ColumnTypes = !includeMetadata || value.ColumnTypes is null ? null : ToStringList(value.ColumnTypes),
+            ColumnNullability = !includeMetadata || value.ColumnNullability is null
                 ? null
                 : ToBoolList(value.ColumnNullability),
-            Rows = value.Rows is null ? null : ToVariantArrayList(value.Rows),
+            Rows = compact || value.Rows is null ? null : ToVariantArrayList(value.Rows),
             RowsAffected = value.RowsAffected,
             Error = value.Error,
             Elapsed = Duration.FromTimeSpan(value.Elapsed),
         };
-        if (value.Columns is not null)
+        if (includeMetadata && value.Columns is not null)
             message.Columns.Add(value.Columns.Select(ToMessage));
+        if (compact) message.ScalarInt64 = scalar;
         return message;
     }
 
     public static SqlExecutionResult ToModel(SqlExecutionResultMessage value)
+    {
+        if (value.HasScalarInt64)
+            throw new CSharpDbClientException("A compact SQL scalar requires a negotiated command session.");
+        return ToSqlExecutionResultModel(value);
+    }
+
+    internal static SqlExecutionResult ToSessionModel(SqlExecutionResultMessage value)
+        => ToSessionModel(value, metadata: null);
+
+    internal static SqlExecutionResult ToSessionModel(SqlExecutionResultMessage value, GrpcSessionResultMetadata? metadata)
+    {
+        if (value.HasScalarInt64 && (!value.IsQuery || value.Error is not null || value.Rows is not null
+            || !(metadata?.HasSingleColumnMetadata ?? HasSingleColumnMetadata(value))))
+            throw new CSharpDbClientException("The command session returned an invalid compact SQL scalar.");
+        return metadata is null ? ToSqlExecutionResultModel(value) : ToSqlExecutionResultModel(value, metadata);
+    }
+
+    internal static bool HasSingleColumnMetadata(SqlExecutionResultMessage value)
+        => (value.ColumnNames?.Values.Count == 1 || value.Columns.Count == 1)
+            && (value.ColumnNames is null || value.ColumnNames.Values.Count == 1)
+            && (value.ColumnTypes is null || value.ColumnTypes.Values.Count == 1)
+            && (value.ColumnNullability is null || value.ColumnNullability.Values.Count == 1)
+            && value.Columns.Count <= 1;
+
+    private static bool TryGetSingleInt64Result(SqlExecutionResult value, out long scalar)
+    {
+        scalar = 0;
+        if (!value.IsQuery || value.Error is not null || value.Rows is not { Count: 1 }
+            || value.Rows[0] is not { Length: 1 } row || row[0] is not long number)
+            return false;
+        if (!(value.ColumnNames is { Length: 1 } || value.Columns is { Length: 1 })
+            || (value.ColumnNames is not null && value.ColumnNames.Length != 1)
+            || (value.ColumnTypes is not null && value.ColumnTypes.Length != 1)
+            || (value.ColumnNullability is not null && value.ColumnNullability.Length != 1)
+            || (value.Columns is not null && value.Columns.Length != 1))
+            return false;
+        scalar = number;
+        return true;
+    }
+
+    private static SqlExecutionResult ToSqlExecutionResultModel(SqlExecutionResultMessage value)
         => new()
         {
             IsQuery = value.IsQuery,
@@ -600,7 +650,25 @@ public static class GrpcModelMapper
             Columns = value.Columns.Count == 0
                 ? null
                 : value.Columns.Select(ToModel).ToArray(),
-            Rows = value.Rows is null ? null : ToRows(value.Rows),
+            Rows = value.HasScalarInt64
+                ? new List<object?[]>(1) { new object?[] { value.ScalarInt64 } }
+                : value.Rows is null ? null : ToRows(value.Rows),
+            RowsAffected = value.RowsAffected,
+            Error = value.Error,
+            Elapsed = value.Elapsed.ToTimeSpan(),
+        };
+
+    private static SqlExecutionResult ToSqlExecutionResultModel(SqlExecutionResultMessage value, GrpcSessionResultMetadata metadata)
+        => new()
+        {
+            IsQuery = value.IsQuery,
+            ColumnNames = metadata.CreateColumnNames(),
+            ColumnTypes = metadata.CreateColumnTypes(),
+            ColumnNullability = metadata.CreateColumnNullability(),
+            Columns = metadata.CreateColumns(),
+            Rows = value.HasScalarInt64
+                ? new List<object?[]>(1) { new object?[] { value.ScalarInt64 } }
+                : value.Rows is null ? null : ToRows(value.Rows),
             RowsAffected = value.RowsAffected,
             Error = value.Error,
             Elapsed = value.Elapsed.ToTimeSpan(),

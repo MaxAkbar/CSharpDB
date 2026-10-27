@@ -4,11 +4,55 @@
 
 It owns the public client contract used to talk to a database, while transport and lower-level implementation details stay behind that boundary.
 
+## Shared gRPC pooling
+
+Rent a client when your application creates and disposes a client for each
+operation. The SDK owns the pool; ADO.NET's `Pooling=true` uses this same pool.
+
+```csharp
+var options = new CSharpDbClientOptions
+{
+    Transport = CSharpDbTransport.Grpc,
+    Endpoint = "http://localhost:5000",
+};
+await using var client = await CSharpDbClient.RentAsync(options, maxPoolSize: 32, ct: ct);
+var result = await client.ExecuteSqlAsync("SELECT 42", ct);
+// Dispose returns the connection to the shared pool.
+```
+
+`Create(options)` remains an unpooled factory. Keeping one created client open
+already reuses its channel. `RentAsync` adds reuse across separate client
+lifetimes and supports both Auto gRPC-Web and Native HTTP/2. Pools isolate
+endpoint, mode, credentials, routing, caller-owned HTTP client, and capacity.
+The same configuration and capacity allow SDK and ADO.NET to share a pool.
+
+A new physical connection performs `GetInfo`; warm rentals make no validation
+RPC. At capacity, rentals wait and honor cancellation. Each rental has fresh
+lifetime and transaction ownership: disposed rentals cannot send RPCs, and a
+transaction identifier must belong to the rental that created it. Dispose
+drains outstanding RPCs and rolls back unfinished transactions under one
+five-second cleanup deadline. Failed or canceled RPCs discard the connection;
+SQL error responses do not automatically discard it. Commands are never
+replayed. An unacknowledged rollback does not prove that the server released
+its transaction.
+
+`ClearPoolAsync(endpoint)` retires every configuration for an endpoint;
+`ClearAllPoolsAsync()` retires all shared gRPC pools. Idle connections close
+immediately, active connections close on return, and waiting rentals can join
+a new pool. Families without active rentals expire after two idle minutes,
+checked every 30 seconds. Caller-owned `HttpClient` objects remain caller-owned.
+API-key authentication still occurs per RPC. Warm rentals do not prove current
+server reachability, and remote prepared statement handles are not added.
+
 ## Current Direction
 
 - `CSharpDB.Client` is now the real implementation layer for database access.
 - `Direct`, `Http`, and `Grpc` are implemented transports today.
-- `NamedPipes` remains the only future transport target.
+- `NamedPipes` is reserved but remains unimplemented.
+- The shared pooling/session foundation is retained after the gRPC
+  micro-optimization experiment. A custom TCP transport is a separate proposed
+  experiment and is not implemented in this checkpoint. See the
+  [network experiment closeout](../../tests/CSharpDB.NetworkBenchmarks/CLOSEOUT.md).
 
 ## Logical Types, Carriers, and Row Values
 
@@ -56,6 +100,17 @@ var client = CSharpDbClient.Create(new CSharpDbClientOptions
 ```
 
 The transport can be selected explicitly with `Transport`. If it is omitted, the client infers it from `Endpoint` and otherwise defaults to direct.
+
+Transactions opened by one direct client, including the daemon's database client,
+share its cached database and writer coordinator. Each session owns an isolated
+transaction and temporary-table scope. Commit, rollback, and rental cleanup finish
+the session without closing another session's database or WAL. Conflicting writes
+return `TransactionConflict`; commands are not replayed automatically. Releasing
+the cached database or starting exclusive maintenance requires all transactions
+and their finalization to finish. File and incremental hybrid owners support
+overlapping transactions. Snapshot hybrid mode with automatic commit or disposal
+persistence requires exclusive session access and returns `Busy` for overlapping
+transactions or ordinary commands until the active transaction finishes.
 
 Direct resolution currently accepts:
 
@@ -180,6 +235,86 @@ var client = CSharpDbClient.Create(new CSharpDbClientOptions
 ```
 
 This resolves to the dedicated `CSharpDB.Daemon` gRPC host.
+
+`GrpcMode = CSharpDbGrpcMode.Auto` preserves existing behavior: plain HTTP
+uses gRPC-Web over HTTP/1.1 when no `HttpClient` is supplied; HTTPS uses native
+gRPC. A supplied `HttpClient` retains its existing handler configuration.
+
+To require native HTTP/2 gRPC explicitly, including on an unencrypted local
+HTTP/2-only listener, use:
+
+```csharp
+await using var client = CSharpDbClient.Create(new CSharpDbClientOptions
+{
+    Transport = CSharpDbTransport.Grpc,
+    Endpoint = "http://127.0.0.1:5821",
+    GrpcMode = CSharpDbGrpcMode.Native
+});
+```
+
+Native mode requires HTTP/2 and does not fall back to gRPC-Web or HTTP/1.1.
+Configure the corresponding daemon listener as shown in its
+[transport guide](../CSharpDB.Daemon/README.md#native-http2-grpc).
+Reuse this client across operations to reuse the underlying connection.
+Custom `HttpClient` instances remain caller-owned and must support HTTP/2
+without a gRPC-Web wrapper when used with native mode.
+
+### Experimental persistent command sessions
+
+Set both `GrpcMode = CSharpDbGrpcMode.Native` and
+`GrpcCallMode = CSharpDbGrpcCallMode.Streaming` to send SQL, transaction
+commands, and `GetInfo` over one persistent bidirectional gRPC call:
+
+```csharp
+var options = new CSharpDbClientOptions
+{
+    Transport = CSharpDbTransport.Grpc,
+    Endpoint = "http://127.0.0.1:5821",
+    GrpcMode = CSharpDbGrpcMode.Native,
+    GrpcCallMode = CSharpDbGrpcCallMode.Streaming
+};
+await using var client = await CSharpDbClient.RentAsync(options, maxPoolSize: 32);
+await client.ExecuteSqlAsync("SELECT 42");
+```
+
+The first command negotiates protocol version 1 and SQL/transaction
+capabilities. Authentication and routing metadata bind to the stream when
+it opens. Each physical stream executes one command at a time; concurrent
+calls queue. SDK and ADO.NET share the existing pool for matching options,
+including call mode. `Unary` remains the default and uses a separate pool
+family. Other APIs continue using their existing unary RPCs.
+
+Peers can also negotiate `result-schema-ref-v1`. Each stream retains one
+private result schema and sends a schema reference when the next query's
+actual metadata matches it. A changed schema sends full metadata again;
+non-query results, errors, and other commands clear the cached schema.
+Older peers continue sending full metadata. Public result metadata remains
+independent across calls and rentals. An invalid schema reference closes
+the stream without replaying the command.
+
+The client maps each negotiated schema definition once and privately caches
+that mapping. Referenced results use the captured mapping directly, with
+fresh arrays, column objects, and declared-type objects for every result.
+
+The independent `single-int64-result-v1` capability encodes a successful
+one-row, one-column `Int64` result without nested protobuf row objects.
+Selection uses the actual result shape and carrier; declared SQL types and
+public result collections are preserved. Nulls, other carriers, and other
+result shapes use the existing encoding. Peers negotiate this capability
+before use, and unary RPCs continue using the existing encoding.
+
+Returning a rental rolls back its unfinished transactions before reuse.
+Disconnecting a stream also triggers server rollback of its remaining
+transactions, with a five-second cleanup deadline. Cancellation during an
+active exchange closes the stream; a canceled queue waiter sends nothing.
+Failed rentals are discarded. Commands are never automatically replayed,
+and a lost commit response has an unknown outcome until the application
+checks the data. An older server without `CommandSession` fails explicitly.
+
+This prototype has no pipelining, batching, remote prepared handles, or
+session-wide temporary tables outside transaction sessions. Benchmark it
+against unary mode for your workload before enabling it; see the
+[fixed socket experiment](../../tests/CSharpDB.NetworkBenchmarks/README.md#persistent-command-session-experiment).
 
 When the remote host is configured with API-key mode, set `ApiKey` once on the
 client options. The HTTP transport sends it as a request header, and the gRPC

@@ -5,7 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>CSharpDB.Client</RootNamespace>
-    <Description>Unified CSharpDB client SDK with pluggable transports (Direct, HTTP, gRPC, TCP, Named Pipes).</Description>
+    <Description>Unified CSharpDB client SDK with Direct, HTTP and gRPC transports.</Description>
   </PropertyGroup>
 
   <ItemGroup>
@@ -20,6 +20,9 @@
   <ItemGroup>
     <InternalsVisibleTo Include="CSharpDB.DevOps" />
     <InternalsVisibleTo Include="CSharpDB.Tests" />
+    <InternalsVisibleTo Include="CSharpDB.Daemon.Tests" />
+    <InternalsVisibleTo Include="CSharpDB.Data" />
+    <InternalsVisibleTo Include="CSharpDB.Data.Tests" />
   </ItemGroup>
 
   <ItemGroup>

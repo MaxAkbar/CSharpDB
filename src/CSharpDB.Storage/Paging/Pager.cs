@@ -233,6 +233,10 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     }
     public int ActiveReaderCount => _checkpoints?.ActiveReaderCount ?? 0;
 
+    // Writer snapshots pin WAL history but are not client query readers.
+    internal int ActiveQueryReaderCount => Math.Max(0,
+        ActiveReaderCount - (_transactions?.ActiveExplicitTransactionCount ?? 0));
+
     internal bool TryGetRuntimeDiagnosticsSnapshot(out PagerRuntimeRawSnapshot snapshot)
     {
         snapshot = default;

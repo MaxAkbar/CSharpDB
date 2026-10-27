@@ -1,5 +1,6 @@
 using System.Data.Common;
 using System.Globalization;
+using CSharpDB.Client;
 
 namespace CSharpDB.Data;
 
@@ -10,6 +11,8 @@ public sealed class CSharpDbConnectionStringBuilder : DbConnectionStringBuilder
     private const string LoadFromKey = "Load From";
     private const string PoolingKey = "Pooling";
     private const string TransportKey = "Transport";
+    private const string GrpcModeKey = "Grpc Mode";
+    private const string GrpcCallModeKey = "Grpc Call Mode";
     private const string MaxPoolSizeKey = "Max Pool Size";
     private const string StoragePresetKey = "Storage Preset";
     private const string EmbeddedOpenModeKey = "Embedded Open Mode";
@@ -58,6 +61,40 @@ public sealed class CSharpDbConnectionStringBuilder : DbConnectionStringBuilder
             if (value < 1)
                 throw new ArgumentOutOfRangeException(nameof(value), "Max Pool Size must be greater than 0.");
             this[MaxPoolSizeKey] = value;
+        }
+    }
+
+    public CSharpDbGrpcMode? GrpcMode
+    {
+        get
+        {
+            var mode = GetNullableEnum<CSharpDbGrpcMode>(GrpcModeKey);
+            if (mode.HasValue && !Enum.IsDefined(mode.Value))
+                throw new FormatException("Grpc Mode must be Auto or Native.");
+            return mode;
+        }
+        set
+        {
+            if (value.HasValue && !Enum.IsDefined(value.Value))
+                throw new ArgumentOutOfRangeException(nameof(value), "Grpc Mode must be Auto or Native.");
+            SetNullableEnum(GrpcModeKey, value);
+        }
+    }
+
+    public CSharpDbGrpcCallMode? GrpcCallMode
+    {
+        get
+        {
+            var mode = GetNullableEnum<CSharpDbGrpcCallMode>(GrpcCallModeKey);
+            if (mode.HasValue && !Enum.IsDefined(mode.Value))
+                throw new FormatException("Grpc Call Mode must be Unary or Streaming.");
+            return mode;
+        }
+        set
+        {
+            if (value.HasValue && !Enum.IsDefined(value.Value))
+                throw new ArgumentOutOfRangeException(nameof(value), "Grpc Call Mode must be Unary or Streaming.");
+            SetNullableEnum(GrpcCallModeKey, value);
         }
     }
 

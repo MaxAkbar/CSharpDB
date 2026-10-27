@@ -179,7 +179,7 @@ public sealed class StorageRuntimeDiagnosticsTests
     }
 
     [Fact]
-    public async Task DirectSummary_AggregatesTwoLiveBuiltInHandlesAndUnregistersThem()
+    public async Task DirectSummary_ReportsOneSharedOwnerAcrossOverlappingTransactions()
     {
         await using var client = new EngineTransportClient(
             $":memory:storage-runtime-{Guid.NewGuid():N}",
@@ -262,8 +262,9 @@ public sealed class StorageRuntimeDiagnosticsTests
         DiagnosticsTopologySnapshot<RuntimeDiagnosticsSnapshot> afterClose =
             await diagnostics.GetRuntimeDiagnosticsAsync(Ct);
         Assert.Equal(
-            DiagnosticsAvailability.Unavailable,
+            DiagnosticsAvailability.Available,
             afterClose.Aggregate.Storage.Availability);
+        Assert.Equal(0, afterClose.Aggregate.Storage.Value!.ActiveWriters);
         Assert.Equal(
             DiagnosticsAvailability.Available,
             afterClose.Aggregate.Wal.Availability);
@@ -1388,7 +1389,7 @@ public sealed class StorageRuntimeDiagnosticsTests
     }
 
     [Fact]
-    public async Task DirectSummary_MultipleRuntimeFamiliesKeepOnlyExactStorageAvailable()
+    public async Task DirectSummary_RetainedCaptureAndReplacementKeepOnlyExactStorageAvailable()
     {
         await using var client = new EngineTransportClient(
             $":memory:storage-runtime-families-{Guid.NewGuid():N}",
@@ -1401,6 +1402,9 @@ public sealed class StorageRuntimeDiagnosticsTests
         {
             transaction = await client.BeginTransactionAsync(Ct);
             Assert.Null((await client.ExecuteSqlAsync("SELECT 1", Ct)).Error);
+            using IDisposable retainedCapture = ClientDiagnosticsTestScope.RetainRuntimeFamily(client);
+            await client.RollbackTransactionAsync(transaction.TransactionId, Ct);
+            transaction = null;
             await client.ReleaseCachedDatabaseAsync(Ct);
             Assert.Null((await client.ExecuteSqlAsync("SELECT 2", Ct)).Error);
 
@@ -1420,19 +1424,17 @@ public sealed class StorageRuntimeDiagnosticsTests
                         runtime.RuntimeFamilies)
                     .ToArray();
             Assert.Equal(2, families.Length);
+            Assert.Single(families, family => family.Value.Storage.Availability == DiagnosticsAvailability.Available);
+            Assert.Single(families, family => family.Value.Storage.Availability == DiagnosticsAvailability.Unavailable);
             Assert.All(
                 families,
                 family =>
                 {
                     Assert.Equal(
                         DiagnosticsAvailability.Available,
-                        family.Value.Storage.Availability);
-                    Assert.Equal(
-                        DiagnosticsAvailability.Available,
                         family.Value.Wal.Availability);
-                    Assert.Equal(
-                        family.Value.Metadata,
-                        family.Value.Storage.Value!.Metadata);
+                    if (family.Value.Storage.Value is { } storage)
+                        Assert.Equal(family.Value.Metadata, storage.Metadata);
                     Assert.Equal(
                         family.Value.Metadata,
                         family.Value.Wal.Value!.Metadata);

@@ -41,6 +41,11 @@ internal sealed class TransactionCoordinator : IDisposable
 
     internal int ActiveWriterCount => GetRuntimeStateSnapshot().ActiveWriterCount;
 
+    internal int ActiveExplicitTransactionCount
+    {
+        get { lock (_stateGate) return _activeExplicitTransactions.Count; }
+    }
+
     internal (
         int ActiveWriterCount,
         bool HasActiveExplicitWriters,

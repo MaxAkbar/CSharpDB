@@ -27,6 +27,7 @@
 
   <ItemGroup>
     <Compile Include="..\Shared\DiagnosticsTransportFixture.cs" Link="Shared\DiagnosticsTransportFixture.cs" />
+    <Compile Include="..\Shared\GrpcSocketDaemonFixture.cs" Link="Shared\GrpcSocketDaemonFixture.cs" />
   </ItemGroup>
 
   <ItemGroup>

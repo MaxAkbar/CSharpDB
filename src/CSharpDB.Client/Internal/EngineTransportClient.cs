@@ -78,7 +78,6 @@ internal sealed partial class EngineTransportClient :
     private Task? _disposeTask;
     private bool _disposeStarted;
     private int _exclusiveMaintenanceActive;
-    private long _databaseOwnershipEpoch;
     private bool _catalogsInitialized;
     private List<ClientLockBoundaryState>? _clientLockBoundaryStates;
 
@@ -664,51 +663,23 @@ internal sealed partial class EngineTransportClient :
     {
         using ClientLockLease clientLock = await AcquireClientLockAsync(ct);
         ThrowIfDisposing();
-        long reuseEpoch = CaptureDatabaseOwnershipEpoch();
-        Database? database = null;
-        if (_hybridDatabaseOptions is null)
-        {
-            database = await DetachCachedDatabaseCoreAsync(
-                ct,
-                "Cannot start a client-managed transaction while direct snapshot readers are active.");
-            if (database is not null)
-            {
-                try
-                {
-                    await database.ResetReusableSessionStateAsync();
-                }
-                catch
-                {
-                    await database.DisposeAsync();
-                    throw;
-                }
-            }
-        }
-        else
-        {
-            // Hybrid persistence may be configured to run only on Dispose.
-            // Preserve that physical-close boundary rather than retaining
-            // the handle across logical transaction sessions.
-            await ReleaseCachedDatabaseCoreAsync(
-                ct,
-                "Cannot start a client-managed transaction while direct snapshot readers are active.");
-        }
+        // Initialize client metadata before taking a writer snapshot. Otherwise
+        // the first ordinary command could wait for schema access held by the
+        // session whose caller is waiting for that command to finish.
+        await EnsureCatalogsInitializedAsync(ct);
+        Database database = await GetDatabaseAsync(ct);
+        if (SnapshotSessionRequiresExclusiveAccess && database.ActiveReaderCount > 0)
+            throw new CSharpDbClientException(
+                "Snapshot hybrid transactions require exclusive access. Close active snapshot readers first.");
 
-        database ??= await OpenOwnedDatabaseAsync(_databasePath, ct);
-        try
-        {
-            await database.BeginTransactionAsync(ct);
-        }
-        catch
-        {
-            await database.DisposeAsync();
-            throw;
-        }
+        // The cached Database owns the one pager/WAL and writer coordinator.
+        // A session owns only its isolated transaction, never the database file.
+        WriteTransaction transaction = await database.BeginWriteTransactionAsync(ct);
 
         string transactionId = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
         var session = new ClientTransactionSession(
             database,
-            reuseEpoch,
+            transaction,
             _observabilityEnabled
                 ? database.RuntimeDiagnosticsState?.TimeProvider ??
                   _observabilityTimeProvider
@@ -720,23 +691,18 @@ internal sealed partial class EngineTransportClient :
         {
             try
             {
-                await database.RollbackAsync(CancellationToken.None);
+                await transaction.DisposeAsync();
             }
             finally
             {
-                await database.DisposeAsync();
+                using var scope = database.EnterTemporaryTableSessionScope(session);
+                await database.ClearTemporaryTablesAsync();
             }
 
             throw new CSharpDbClientException("Failed to register the transaction session.");
         }
 
         RetainRuntimeDiagnosticsState(session);
-
-        if (_transactions.Count > 1)
-        {
-            foreach (ClientTransactionSession activeSession in _transactions.Values)
-                activeSession.DisableReuse();
-        }
 
         return new TransactionSessionInfo
         {
@@ -786,7 +752,8 @@ internal sealed partial class EngineTransportClient :
             using IDisposable? queueDurationScope = operation?.EnterQueueDurationScope();
 
             queryDispatched = true;
-            return await ExecuteQueryAsync(session.Database, sql, ct);
+            await using var result = await session.Transaction.ExecuteAsync(sql, ct);
+            return await MaterializeQueryResultAsync(result, ct);
         }
         catch (Exception exception)
         {
@@ -828,11 +795,11 @@ internal sealed partial class EngineTransportClient :
 
         try
         {
-            CoreTableSchema? schema = session.Database.GetTableSchema(normalizedTableName);
+            CoreTableSchema? schema = session.Transaction.GetTableSchema(normalizedTableName);
             if (schema is null)
                 return null;
 
-            IndexSchema[] indexes = session.Database.GetIndexes()
+            IndexSchema[] indexes = session.Transaction.GetIndexes()
                 .Where(index =>
                     index.Kind is not (
                         CSharpDB.Primitives.IndexKind.ForeignKeyInternal or
@@ -845,10 +812,10 @@ internal sealed partial class EngineTransportClient :
             return new TransactionTableSnapshot
             {
                 HasUpdateHostCallbacks = _directDatabaseOptions.StorageEngineOptions.PagerOptions.Interceptors.Count != 0
-                    || session.Database.HasUpdateHostCallbacks(normalizedTableName),
+                    || session.Transaction.HasUpdateHostCallbacks(normalizedTableName),
                 Schema = MapTableSchema(schema),
                 Indexes = indexes,
-                Triggers = session.Database.GetTriggers()
+                Triggers = session.Transaction.GetTriggers()
                     .Where(trigger => string.Equals(trigger.TableName, normalizedTableName, StringComparison.OrdinalIgnoreCase))
                     .Select(MapTriggerSchema).ToArray(),
             };
@@ -880,7 +847,7 @@ internal sealed partial class EngineTransportClient :
 
         try
         {
-            await session.Database.ApplyTableSchemaIdentitiesAsync(
+            await session.Transaction.ApplyTableSchemaIdentitiesAsync(
                 normalizedTableName,
                 MapCoreTableSchema(identitySource),
                 ct);
@@ -999,7 +966,7 @@ internal sealed partial class EngineTransportClient :
             using IDisposable? queueDurationScope = operation?.EnterQueueDurationScope();
 
             queryDispatched = true;
-            result = await session.Database.ExecuteAsync(sql, ct);
+            result = await session.Transaction.ExecuteAsync(sql, ct);
             if (!result.IsQuery)
                 return null;
 
@@ -1273,23 +1240,27 @@ internal sealed partial class EngineTransportClient :
             {
                 if (finalizationsDrained is not null)
                     await finalizationsDrained;
-                if (maintenanceLifetimesDrained is not null)
-                    await maintenanceLifetimesDrained;
-            }
-
-            using (ClientLockLease finalLock =
-                   await AcquireClientLockAsync(CancellationToken.None))
-            {
-                if (_databaseTask is not null)
+                try
                 {
-                    try
+                    if (maintenanceLifetimesDrained is not null)
+                        await maintenanceLifetimesDrained;
+                }
+                finally
+                {
+                    using ClientLockLease finalLock =
+                        await AcquireClientLockAsync(CancellationToken.None);
+                    if (_databaseTask is not null)
                     {
-                        var db = await _databaseTask;
-                        await db.DisposeAsync();
-                    }
-                    catch
-                    {
-                        // ignore lazy-init failures during dispose
+                        try
+                        {
+                            Database database = await _databaseTask;
+                            await database.DisposeAsync();
+                        }
+                        catch
+                        {
+                            // Preserve best-effort cached-owner disposal. Errors
+                            // finishing logical transaction sessions propagate above.
+                        }
                     }
                 }
             }
@@ -1606,8 +1577,21 @@ internal sealed partial class EngineTransportClient :
         }
     }
 
+    private bool SnapshotSessionRequiresExclusiveAccess =>
+        _hybridDatabaseOptions?.PersistenceMode == HybridPersistenceMode.Snapshot &&
+        (_hybridDatabaseOptions.PersistenceTriggers &
+            (HybridPersistenceTriggers.Commit | HybridPersistenceTriggers.Dispose)) != 0;
+
     private async Task<Database> GetDatabaseAsync(CancellationToken ct)
     {
+        // Full-image hybrid persistence requires exclusive access at session
+        // completion. Incremental-durable hybrid and file owners allow overlap.
+        if (SnapshotSessionRequiresExclusiveAccess &&
+            (!_transactions.IsEmpty || Volatile.Read(ref _activeFinalizations) != 0))
+        {
+            throw new CSharpDB.Primitives.CSharpDbException(CSharpDB.Primitives.ErrorCode.Busy,
+                "Finish the active snapshot hybrid transaction before using the ordinary session or starting another transaction.");
+        }
         using IDisposable? operationalBoundary =
             EnterDirectOperationalTransportScope();
 
@@ -1637,7 +1621,6 @@ internal sealed partial class EngineTransportClient :
                             var openCompletion = new TaskCompletionSource<Database>(
                                 TaskCreationOptions.RunContinuationsAsynchronously);
                             createdOpenTask = openCompletion.Task;
-                            _databaseOwnershipEpoch++;
                             _databaseTask = createdOpenTask;
                             if (openBoundary is not null)
                             {
@@ -1785,10 +1768,10 @@ internal sealed partial class EngineTransportClient :
         try
         {
             ThrowIfDisposing();
-            if (activeTransactionMessage is not null && !_transactions.IsEmpty)
+            if (!_transactions.IsEmpty || _activeFinalizations != 0)
             {
                 throw new ExclusiveDatabaseAccessRejectedException(
-                    activeTransactionMessage);
+                    activeTransactionMessage ?? "Finish active transactions before starting an exclusive operation.");
             }
 
             maintenanceOperation?.SetPhase(
@@ -1923,7 +1906,6 @@ internal sealed partial class EngineTransportClient :
                         "Exclusive database access ended before the restored database could be cached.");
                 }
 
-                _databaseOwnershipEpoch++;
                 _catalogsInitialized = false;
                 _databaseTask = Task.FromResult(database);
                 database = null;
@@ -2128,18 +2110,18 @@ internal sealed partial class EngineTransportClient :
         private long _lastActiveTimestamp;
         private int _activeGateOperations;
         private int _activeDiagnosticsReaders;
-        private int _reuseDisabled;
         private int _runtimeDiagnosticsStateOwnershipReleased;
         private int _state;
 
         public ClientTransactionSession(
             Database database,
-            long reuseEpoch,
+            WriteTransaction transaction,
             TimeProvider? diagnosticsTimeProvider,
             TimeSpan diagnosticsAbandonmentThreshold)
         {
             Database = database;
-            ReuseEpoch = reuseEpoch;
+            Transaction = transaction;
+            transaction.SetTemporaryTableSession(this);
             _diagnosticsTimeProvider = diagnosticsTimeProvider;
             _diagnosticsAbandonmentThreshold = diagnosticsAbandonmentThreshold;
             if (diagnosticsTimeProvider is not null)
@@ -2156,13 +2138,10 @@ internal sealed partial class EngineTransportClient :
         }
 
         public Database Database { get; }
-        public long ReuseEpoch { get; }
-        public bool ReuseAllowed => Volatile.Read(ref _reuseDisabled) == 0;
+        public WriteTransaction Transaction { get; }
         public bool CanPublishDiagnostics => _diagnosticsTimeProvider is not null;
         public bool HasActiveDiagnosticsReader =>
             Volatile.Read(ref _activeDiagnosticsReaders) > 0;
-
-        public void DisableReuse() => Volatile.Write(ref _reuseDisabled, 1);
 
         public async ValueTask<bool> TryEnterOperationAsync(CancellationToken ct)
         {
@@ -2859,6 +2838,11 @@ internal sealed partial class EngineTransportClient :
     {
         using IDisposable? transportScope = EnterDirectTransportScope();
         await using var result = await db.ExecuteAsync(sql, observabilitySql ?? sql, ct);
+        return await MaterializeQueryResultAsync(result, ct);
+    }
+
+    private static async Task<SqlExecutionResult> MaterializeQueryResultAsync(CSharpDB.Execution.QueryResult result, CancellationToken ct)
+    {
         var rows = await result.ToListAsync(ct);
         return new SqlExecutionResult
         {
@@ -3440,7 +3424,7 @@ internal sealed partial class EngineTransportClient :
         try
         {
             await session.WaitForOperationsAsync(CancellationToken.None);
-            await session.Database.DisposeAsync();
+            await DisposeTransactionSessionAsync(session);
         }
         finally
         {
@@ -3452,6 +3436,20 @@ internal sealed partial class EngineTransportClient :
         }
     }
 
+    private static async ValueTask DisposeTransactionSessionAsync(ClientTransactionSession session)
+    {
+        try
+        {
+            await session.Transaction.DisposeAsync();
+        }
+        finally
+        {
+            using (session.Database.EnterTemporaryTableSessionScope(session))
+                await session.Database.ClearTemporaryTablesAsync();
+            await session.Database.PersistClientSessionBoundaryAsync();
+        }
+    }
+
     private async Task CompleteTransactionAsync(
         string transactionId,
         bool commit,
@@ -3459,9 +3457,7 @@ internal sealed partial class EngineTransportClient :
     {
         ClientLockLease lifecycleBoundaryLock = await AcquireClientLockAsync(ct);
         ClientTransactionSession? session = null;
-        bool adopted = false;
         bool operationGateAcquired = false;
-        bool sessionResetSucceeded = false;
         try
         {
             ThrowIfDisposing();
@@ -3490,17 +3486,20 @@ internal sealed partial class EngineTransportClient :
                 using (ClientLockLease recoveryLock =
                        await AcquireClientLockAsync(CancellationToken.None))
                 {
-                    session.CancelFinalizationClaim();
                     disposeClaimedSession = _disposeStarted;
                     if (!disposeClaimedSession)
+                    {
+                        session.CancelFinalizationClaim();
                         _transactions.TryAdd(transactionId, session);
+                    }
                 }
 
                 if (disposeClaimedSession)
                 {
                     try
                     {
-                        await session.Database.DisposeAsync();
+                        await session.WaitForOperationsAsync(CancellationToken.None);
+                        await DisposeTransactionSessionAsync(session);
                     }
                     finally
                     {
@@ -3522,34 +3521,18 @@ internal sealed partial class EngineTransportClient :
                 throw;
             }
 
-            Database database = session.Database;
-
             if (commit)
-                await database.CommitAsync(ct);
+                await session.Transaction.CommitAsync(ct);
             else
-                await database.RollbackAsync(ct);
-
-            if (_hybridDatabaseOptions is null)
-            {
-                await database.ResetReusableSessionStateAsync();
-                sessionResetSucceeded = true;
-            }
+                await session.Transaction.RollbackAsync(ct);
         }
         finally
         {
             if (session is not null && operationGateAcquired)
             {
-                using (ClientLockLease adoptionLock =
-                       await AcquireClientLockAsync(CancellationToken.None))
-                {
-                    if (!_disposeStarted && _hybridDatabaseOptions is null && sessionResetSucceeded)
-                        adopted = TryAdoptCachedDatabase(session);
-                }
-
                 try
                 {
-                    if (!adopted)
-                        await session.Database.DisposeAsync();
+                    await DisposeTransactionSessionAsync(session);
                 }
                 finally
                 {
@@ -3565,103 +3548,12 @@ internal sealed partial class EngineTransportClient :
         }
     }
 
-    private long CaptureDatabaseOwnershipEpoch()
-    {
-        lock (_databaseGate)
-            return _databaseOwnershipEpoch;
-    }
-
-    private bool TryAdoptCachedDatabase(ClientTransactionSession session)
-    {
-        lock (_databaseGate)
-        {
-            if (!session.ReuseAllowed ||
-                session.ReuseEpoch != _databaseOwnershipEpoch ||
-                !ReferenceEquals(
-                    session.Database.RuntimeDiagnosticsState,
-                    CurrentRuntimeDiagnosticsState) ||
-                !_transactions.IsEmpty ||
-                _databaseTask is not null ||
-                _databaseReleaseCompletion is { Task.IsCompleted: false })
-            {
-                return false;
-            }
-
-            _catalogsInitialized = false;
-            _databaseReleaseCompletion = null;
-            _databaseOwnershipEpoch++;
-            _databaseTask = Task.FromResult(session.Database);
-            return true;
-        }
-    }
-
-    private async Task<Database?> DetachCachedDatabaseCoreAsync(
-        CancellationToken ct,
-        string activeReaderMessage)
-    {
-        Task<Database>? openTask;
-        TaskCompletionSource releaseCompletion;
-        lock (_databaseGate)
-        {
-            openTask = _databaseTask;
-            _catalogsInitialized = false;
-            if (openTask is null)
-                return null;
-
-            _databaseTask = null;
-            releaseCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            _databaseReleaseCompletion = releaseCompletion;
-        }
-
-        try
-        {
-            Database database;
-            try
-            {
-                database = await openTask.WaitAsync(ct);
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                lock (_databaseGate)
-                {
-                    if (_databaseTask is null)
-                        _databaseTask = openTask;
-                }
-
-                throw;
-            }
-            catch
-            {
-                return null;
-            }
-
-            if (database.ActiveReaderCount > 0)
-            {
-                lock (_databaseGate)
-                {
-                    if (_databaseTask is null)
-                        _databaseTask = openTask;
-                }
-
-                throw new CSharpDbClientException(activeReaderMessage);
-            }
-
-            return database;
-        }
-        finally
-        {
-            lock (_databaseGate)
-            {
-                if (ReferenceEquals(_databaseReleaseCompletion, releaseCompletion))
-                    _databaseReleaseCompletion = null;
-            }
-
-            releaseCompletion.TrySetResult();
-        }
-    }
-
     private async Task ReleaseCachedDatabaseCoreAsync(CancellationToken ct, string activeReaderMessage)
     {
+        if (!_transactions.IsEmpty || _activeFinalizations != 0)
+            throw new CSharpDbClientException(
+                "Cannot release the direct database handle while client-managed transactions are active or completing.");
+
         Task<Database>? openTask;
         TaskCompletionSource releaseCompletion;
         lock (_databaseGate)

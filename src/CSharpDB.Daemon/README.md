@@ -97,6 +97,54 @@ When `Transport = Grpc` connects to a plain `http://` daemon endpoint,
 default HTTP service URL. HTTPS endpoints and custom gRPC test clients can still
 use native gRPC.
 
+### Native HTTP/2 gRPC
+
+The SDK supports `GrpcMode = CSharpDbGrpcMode.Native`, and ADO.NET accepts
+`Grpc Mode=Native`. Both require HTTP/2 instead of selecting the default
+plain-HTTP gRPC-Web compatibility path. Existing clients remain on `Auto`.
+
+For a local experiment, configure two loopback listeners in the daemon's
+`appsettings.json` using Kestrel's standard endpoint configuration:
+
+```json
+{
+  "Kestrel": {
+    "Endpoints": {
+      "Compatibility": {
+        "Url": "http://127.0.0.1:5820",
+        "Protocols": "Http1"
+      },
+      "NativeGrpc": {
+        "Url": "http://127.0.0.1:5821",
+        "Protocols": "Http2"
+      }
+    }
+  }
+}
+```
+
+Merge this section with the existing configuration. REST and gRPC-Web clients
+use port `5820`; native gRPC clients use port `5821`. An unencrypted native
+gRPC listener must be HTTP/2-only. Remote deployments should use a trusted
+HTTPS listener supporting HTTP/2; native mode also works with HTTPS and
+retains certificate validation.
+
+The socket experiment is in
+[`tests/CSharpDB.NetworkBenchmarks`](../../tests/CSharpDB.NetworkBenchmarks/README.md).
+It uses the actual daemon with dynamically assigned loopback ports and the
+same SQL messages and database execution path in both arms.
+
+The daemon also exposes experimental `CommandSession` protocol version 1
+over native HTTP/2: a capability handshake followed by ordered SQL and
+transaction commands on one bidirectional stream. Clients opt in with
+`GrpcCallMode = CSharpDbGrpcCallMode.Streaming` or ADO.NET
+`Grpc Call Mode=Streaming`, together with explicit native mode. Existing
+unary RPCs remain available. Each session permits one command in flight,
+binds API-key/routing metadata at opening, and owns its transaction IDs.
+When it ends, unfinished transactions receive best-effort rollback with a
+five-second deadline. Cleanup failures are logged. No command is replayed
+after disconnect. See the [SDK session guide](../CSharpDB.Client/README.md#experimental-persistent-command-sessions).
+
 For remote access to a daemon on another machine, use `Grpc` or `Http` with a
 normal base address such as:
 

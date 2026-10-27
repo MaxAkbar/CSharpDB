@@ -1138,12 +1138,16 @@ public sealed partial class QueryPlanner
         return stmt switch
         {
             ConditionalStatement conditional => await ExecuteConditionalAsync(conditional, ct),
+            CreateTableStatement { IsTemporary: true } createTemporary =>
+                await ExecuteCreateTableAsync(createTemporary, ct),
             CreateTableStatement create => await ExecuteSchemaMutationAsync(
                 token => ExecuteCreateTableAsync(create, token),
                 ct),
             CreateExternalTableStatement createExternal => await ExecuteSchemaMutationAsync(
                 token => ExecuteCreateExternalTableAsync(createExternal, token),
                 ct),
+            DropTableStatement dropTemporary when dropTemporary.IsTemporary || HasTemporaryTable(dropTemporary.TableName) =>
+                await ExecuteDropTableAsync(dropTemporary, ct),
             DropTableStatement drop => await ExecuteSchemaMutationAsync(
                 token => ExecuteDropTableAsync(drop, token),
                 ct),

@@ -82,6 +82,7 @@ service CSharpDbRpc {
   rpc ExecuteProcedure (ExecuteProcedureRequest) returns (ProcedureExecutionResultMessage);
 
   rpc ExecuteSql (SqlRequest) returns (SqlExecutionResultMessage);
+  rpc CommandSession (stream CommandSessionRequest) returns (stream CommandSessionResponse);
 
   rpc BeginTransaction (google.protobuf.Empty) returns (TransactionSessionInfoMessage);
   rpc ExecuteInTransaction (TransactionSqlRequest) returns (SqlExecutionResultMessage);
@@ -780,6 +781,60 @@ message ExecuteProcedureRequest {
   VariantObject args = 2;
 }
 
+// Version 1 deliberately permits only one command in flight per stream.
+message CommandSessionHello {
+  uint32 protocol_version = 1;
+  repeated string capabilities = 2;
+}
+
+message CommandSessionReady {
+  uint32 protocol_version = 1;
+  uint32 max_in_flight = 2;
+  repeated string capabilities = 3;
+}
+
+message CommandSessionRequest {
+  uint64 request_id = 1;
+  oneof command {
+    CommandSessionHello hello = 2;
+    google.protobuf.Empty get_info = 3;
+    SqlRequest execute_sql = 4;
+    google.protobuf.Empty begin_transaction = 5;
+    TransactionSqlRequest execute_in_transaction = 6;
+    TransactionIdRequest commit_transaction = 7;
+    TransactionIdRequest rollback_transaction = 8;
+  }
+}
+
+message CommandSessionMetadata {
+  string key = 1;
+  oneof value {
+    string text = 2;
+    bytes binary = 3;
+  }
+}
+
+message CommandSessionError {
+  int32 status_code = 1;
+  string detail = 2;
+  repeated CommandSessionMetadata trailers = 3;
+}
+
+message CommandSessionResponse {
+  uint64 request_id = 1;
+  oneof outcome {
+    CommandSessionReady ready = 2;
+    DatabaseInfoMessage info = 3;
+    SqlExecutionResultMessage result = 4;
+    TransactionSessionInfoMessage transaction = 5;
+    google.protobuf.Empty completed = 6;
+    CommandSessionError error = 7;
+  }
+  // Used only after both peers negotiate result-schema-ref-v1.
+  uint64 result_schema_id = 8;
+  bool result_schema_reference = 9;
+}
+
 message SqlRequest {
   string sql = 1;
 }
@@ -1024,6 +1079,8 @@ message SqlExecutionResultMessage {
   StringList column_types = 7;
   BoolList column_nullability = 8;
   repeated ColumnDefinitionMessage columns = 9;
+  // Negotiated single-int64-result-v1 command sessions only. Presence includes zero.
+  optional sint64 scalar_int64 = 10;
 }
 
 message DatabaseInfoMessage {

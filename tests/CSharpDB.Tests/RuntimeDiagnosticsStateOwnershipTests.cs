@@ -982,7 +982,7 @@ public sealed class RuntimeDiagnosticsStateOwnershipTests
     }
 
     [Fact]
-    public async Task ActiveTransaction_RetainsFrozenFamilyAcrossTransientCachedRelease()
+    public async Task ActiveTransaction_RejectsReleaseAndRetainsFamilyUntilCompletion()
     {
         int openCount = 0;
         var client = new EngineTransportClient(
@@ -1023,42 +1023,26 @@ public sealed class RuntimeDiagnosticsStateOwnershipTests
             Assert.Null(competing.Error);
             Assert.Equal(2, transactionRegistry.GetRecentSnapshot(10).Records.Count);
 
-            await client.ReleaseCachedDatabaseAsync(Ct);
-            CSharpDbRuntimeDiagnosticsState replacementState =
-                Assert.IsType<CSharpDbRuntimeDiagnosticsState>(
-                    client.CurrentRuntimeDiagnosticsState);
-            Assert.NotSame(transactionState, replacementState);
-            Assert.Equal(0, transactionState.CounterEpoch);
-            Assert.Equal(0, replacementState.CounterEpoch);
+            await Assert.ThrowsAsync<CSharpDbClientException>(async () => await client.ReleaseCachedDatabaseAsync(Ct));
+            Assert.Same(transactionState, client.CurrentRuntimeDiagnosticsState);
             Assert.Equal(0, disposal.DisposeCount);
-
-            SqlExecutionResult replacement = await client.ExecuteSqlAsync("SELECT 3", Ct);
-            Assert.Null(replacement.Error);
-            Assert.Equal(0, transactionState.CounterEpoch);
-            Assert.Equal(1, replacementState.CounterEpoch);
-            QueryRuntimeDiagnostics replacementRegistry =
-                QueryRuntimeDiagnostics.GetOrCreate(
-                    replacementState,
-                    startSweepTimer: false);
-            Assert.Equal(
-                2,
-                transactionRegistry.GetRecentSnapshot(10).Records.Count);
-            RecentQuerySnapshot replacementTerminal = Assert.Single(
-                replacementRegistry.GetRecentSnapshot(10).Records);
-            Assert.Equal(0, Assert.Single(
-                transactionRegistry.GetRecentSnapshot(10).Records
-                    .Select(static record => record.Metadata.CounterEpoch)
-                    .Distinct()));
-            Assert.Equal(1, replacementTerminal.Metadata.CounterEpoch);
-            Assert.Equal(
-                transactionState.ServerInstanceId,
-                replacementState.ServerInstanceId);
+            Assert.Null((await client.ExecuteSqlAsync("SELECT 3", Ct)).Error);
+            Assert.Equal(3, transactionRegistry.GetRecentSnapshot(10).Records.Count);
+            Assert.All(transactionRegistry.GetRecentSnapshot(10).Records,
+                record => Assert.Equal(0, record.Metadata.CounterEpoch));
+            Assert.Equal(1, Volatile.Read(ref openCount));
 
             await client.RollbackTransactionAsync(transaction.TransactionId, Ct);
             transactionId = null;
-            Assert.Equal(1, disposal.DisposeCount);
+            Assert.Equal(0, disposal.DisposeCount);
             Assert.Empty(transactionRegistry.GetActiveSnapshot(10).Records);
-            Assert.Equal(3, Volatile.Read(ref openCount));
+            await client.ReleaseCachedDatabaseAsync(Ct);
+            CSharpDbRuntimeDiagnosticsState replacementState = client.CurrentRuntimeDiagnosticsState!;
+            Assert.NotSame(transactionState, replacementState);
+            Assert.Equal(1, disposal.DisposeCount);
+            Assert.Null((await client.ExecuteSqlAsync("SELECT 4", Ct)).Error);
+            Assert.Equal(1, replacementState.CounterEpoch);
+            Assert.Equal(2, Volatile.Read(ref openCount));
         }
         finally
         {
@@ -1078,7 +1062,7 @@ public sealed class RuntimeDiagnosticsStateOwnershipTests
     }
 
     [Fact]
-    public async Task TransactionQueuedSuccessAndCancellation_StayOnOwningFamilyAfterRelease()
+    public async Task TransactionQueuedSuccessAndCancellation_StayOnSharedFamilyWhenReleaseIsRejected()
     {
         var client = new EngineTransportClient(
             ":memory:transaction-queued-family",
@@ -1104,11 +1088,11 @@ public sealed class RuntimeDiagnosticsStateOwnershipTests
                     startSweepTimer: false);
 
             Assert.Null((await client.ExecuteSqlAsync("SELECT 10", Ct)).Error);
-            await client.ReleaseCachedDatabaseAsync(Ct);
+            await Assert.ThrowsAsync<CSharpDbClientException>(async () => await client.ReleaseCachedDatabaseAsync(Ct));
             CSharpDbRuntimeDiagnosticsState pendingReplacement =
                 Assert.IsType<CSharpDbRuntimeDiagnosticsState>(
                     client.CurrentRuntimeDiagnosticsState);
-            Assert.NotSame(transactionState, pendingReplacement);
+            Assert.Same(transactionState, pendingReplacement);
             QueryRuntimeDiagnostics replacementRegistry =
                 QueryRuntimeDiagnostics.GetOrCreate(
                     pendingReplacement,
@@ -1163,7 +1147,7 @@ public sealed class RuntimeDiagnosticsStateOwnershipTests
             }
 
             Assert.Empty(replacementRegistry.GetActiveSnapshot(10).Records);
-            Assert.Empty(replacementRegistry.GetRecentSnapshot(10).Records);
+            Assert.Same(transactionRegistry, replacementRegistry);
             Assert.All(
                 transactionRegistry.GetRecentSnapshot(20).Records,
                 record => Assert.Equal(0, record.Metadata.CounterEpoch));

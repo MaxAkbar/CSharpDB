@@ -1883,7 +1883,7 @@ internal sealed partial class EngineTransportClient
 
         try
         {
-            return databaseTask.GetAwaiter().GetResult().ActiveReaderCount;
+            return databaseTask.GetAwaiter().GetResult().ActiveQueryReaderCount;
         }
         catch
         {

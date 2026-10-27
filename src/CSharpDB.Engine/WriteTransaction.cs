@@ -20,6 +20,7 @@ public sealed class WriteTransaction : IAsyncDisposable
     private readonly LifecycleOperation? _lifecycleOperation;
     private bool _completed;
     private bool _writeFailed;
+    private object? _temporaryTableSessionKey;
 
     internal WriteTransaction(
         Database database,
@@ -37,6 +38,89 @@ public sealed class WriteTransaction : IAsyncDisposable
         _initialSchemaVersion = initialSchemaVersion;
         _initialRowVersionHighWater = initialRowVersionHighWater;
         _lifecycleOperation = lifecycleOperation;
+    }
+
+    // Client sessions share the database owner but have private temporary tables.
+    // Deferred query iteration must enter this scope along with the pager binding.
+    internal void SetTemporaryTableSession(object sessionKey)
+        => _temporaryTableSessionKey = sessionKey;
+
+    private IDisposable BindExecution()
+        => BindExecution(_storageTransaction.Bind());
+
+    private IDisposable BindSnapshotExecution()
+        => BindExecution(_storageTransaction.BindSnapshotRead());
+
+    private IDisposable BindExecution(IDisposable binding)
+    {
+        if (_temporaryTableSessionKey is null)
+            return binding;
+        try
+        {
+            return new SessionBinding(binding,
+                _database.EnterTemporaryTableSessionScope(_temporaryTableSessionKey));
+        }
+        catch
+        {
+            binding.Dispose();
+            throw;
+        }
+    }
+
+    private sealed class SessionBinding(IDisposable binding, IDisposable sessionScope) : IDisposable
+    {
+        public void Dispose()
+        {
+            try { sessionScope.Dispose(); }
+            finally { binding.Dispose(); }
+        }
+    }
+
+    internal TableSchema? GetTableSchema(string tableName)
+    {
+        EnsureActive();
+        using var scope = BindExecution();
+        TableSchema? schema = _catalog.GetTable(tableName);
+        if (schema is null)
+            return null;
+        long nextRowId = schema.NextRowId;
+        foreach (var hint in _planner.GetCommittedNextRowIdHints())
+            if (string.Equals(hint.Key, tableName, StringComparison.OrdinalIgnoreCase))
+                nextRowId = Math.Max(nextRowId, hint.Value);
+        return new TableSchema
+        {
+            SchemaId = schema.SchemaId,
+            TableName = schema.TableName,
+            Columns = schema.Columns,
+            ForeignKeys = schema.ForeignKeys,
+            CheckConstraints = schema.CheckConstraints,
+            KeyConstraints = schema.KeyConstraints,
+            QualifiedMappings = schema.QualifiedMappings,
+            NextRowId = nextRowId,
+        };
+    }
+
+    internal IReadOnlyCollection<IndexSchema> GetIndexes() => _catalog.GetIndexes();
+    internal IReadOnlyCollection<TriggerSchema> GetTriggers() => _catalog.GetTriggers();
+    internal bool HasUpdateHostCallbacks(string tableName)
+        => _database.HasUpdateHostCallbacks(GetTableSchema(tableName));
+
+    internal async ValueTask ApplyTableSchemaIdentitiesAsync(
+        string tableName, TableSchema identitySource, CancellationToken ct)
+    {
+        EnsureActive();
+        EnsureWriteAllowed();
+        try
+        {
+            using var scope = BindExecution();
+            await _storageTransaction.AcquireSchemaWriteLockAsync(ct);
+            await _catalog.ApplyTableSchemaIdentitiesAsync(tableName, identitySource, ct);
+        }
+        catch
+        {
+            _writeFailed = true;
+            throw;
+        }
     }
 
     /// <summary>
@@ -64,7 +148,7 @@ public sealed class WriteTransaction : IAsyncDisposable
         Statement statement = Parser.TryParseSimpleSelect(sql, out var simpleSelect)
             ? simpleSelect
             : Parser.Parse(sql);
-        return await ExecuteAsyncCore(statement, _storageTransaction.Bind, ct);
+        return await ExecuteAsyncCore(statement, BindExecution, ct);
     }
 
     /// <summary>
@@ -91,7 +175,7 @@ public sealed class WriteTransaction : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(statement);
         EnsureActive();
 
-        return await ExecuteAsyncCore(statement, _storageTransaction.Bind, ct);
+        return await ExecuteAsyncCore(statement, BindExecution, ct);
     }
 
     internal async ValueTask<QueryResult> ExecuteImplicitAutoCommitAsync(Statement statement, CancellationToken ct = default)
@@ -138,7 +222,7 @@ public sealed class WriteTransaction : IAsyncDisposable
         if (!classification.IsReadOnly)
             throw new InvalidOperationException("Snapshot-read execution only supports read-only statements.");
 
-        return await ExecuteAsyncCore(classification.Statement, _storageTransaction.BindSnapshotRead, ct);
+        return await ExecuteAsyncCore(classification.Statement, BindSnapshotExecution, ct);
     }
 
     /// <summary>
@@ -169,7 +253,7 @@ public sealed class WriteTransaction : IAsyncDisposable
         if (!SqlStatementClassifier.IsReadOnly(statement))
             throw new InvalidOperationException("Snapshot-read execution only supports read-only statements.");
 
-        return await ExecuteAsyncCore(statement, _storageTransaction.BindSnapshotRead, ct);
+        return await ExecuteAsyncCore(statement, BindSnapshotExecution, ct);
     }
 
     /// <summary>
@@ -315,10 +399,17 @@ public sealed class WriteTransaction : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (_completed)
-            return;
-
-        await RollbackAsync();
+        try
+        {
+            if (!_completed)
+                await RollbackAsync();
+        }
+        finally
+        {
+            // Catalog preparation can fail before commit begins. Always release
+            // the storage transaction even when the logical transaction ended.
+            await _storageTransaction.DisposeAsync();
+        }
     }
 
     private void EnsureActive()

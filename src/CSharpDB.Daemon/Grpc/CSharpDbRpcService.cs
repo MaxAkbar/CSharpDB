@@ -18,7 +18,7 @@ using CoreErrorCode = CSharpDB.Primitives.ErrorCode;
 
 namespace CSharpDB.Daemon.Grpc;
 
-public sealed class CSharpDbRpcService : CSharpDbRpc.CSharpDbRpcBase
+public sealed partial class CSharpDbRpcService : CSharpDbRpc.CSharpDbRpcBase
 {
     public override Task<DefinitionCatalogResponse> ReadDefinitionCatalog(DefinitionCatalogRequest request, ServerCallContext context)
         => ExecuteAsync(context,
@@ -382,9 +382,13 @@ public sealed class CSharpDbRpcService : CSharpDbRpc.CSharpDbRpcBase
         => ExecuteAsync(context, ct => client.ExecuteProcedureAsync(request.Name, ReadRequiredObject(request.Args), ct), GrpcModelMapper.ToMessage);
 
     public override Task<SqlExecutionResultMessage> ExecuteSql(SqlRequest request, ServerCallContext context)
+        => ExecuteSqlResultAsync(request, context, GrpcModelMapper.ToMessage);
+
+    private Task<TResponse> ExecuteSqlResultAsync<TResponse>(SqlRequest request, ServerCallContext context,
+        Func<SqlExecutionResult, TResponse> map)
     {
         if (TryCreateStatelessTemporaryTableSqlRejection(request.Sql, out var rejection))
-            return Task.FromResult(GrpcModelMapper.ToMessage(rejection));
+            return Task.FromResult(map(rejection));
 
         return ExecuteAsync(
             context,
@@ -400,7 +404,7 @@ public sealed class CSharpDbRpcService : CSharpDbRpc.CSharpDbRpcBase
 
                 return result;
             },
-            GrpcModelMapper.ToMessage);
+            map);
     }
 
     public override Task<TransactionSessionInfoMessage> BeginTransaction(Empty request, ServerCallContext context)

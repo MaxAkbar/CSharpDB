@@ -16,6 +16,9 @@ internal sealed class PagerWriteTransaction : IAsyncDisposable
 
     internal IDisposable Bind() => _pager.BindTransaction(_state);
 
+    internal ValueTask AcquireSchemaWriteLockAsync(CancellationToken ct)
+        => _pager.AcquireSchemaWriteLockAsync(ct);
+
     internal IDisposable BindSnapshotRead()
         => new CombinedBinding(Bind(), _pager.SuppressLogicalReadTracking());
 
