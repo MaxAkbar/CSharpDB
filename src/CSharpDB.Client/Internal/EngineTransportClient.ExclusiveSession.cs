@@ -18,7 +18,8 @@ internal sealed partial class EngineTransportClient
         EngineTransportClient? session = null;
         try
         {
-            if (_activeFinalizations != 0) throw new InvalidOperationException("Wait for transaction completion before starting an exclusive operation.");
+            if (_activeFinalizations != 0 || _pendingTransactionBegins != 0)
+                throw new InvalidOperationException("Wait for transaction admission/completion before starting an exclusive operation.");
             var source = _directDatabaseOptions;
             var storage = source.StorageEngineOptions;
             var options = new DatabaseOptions

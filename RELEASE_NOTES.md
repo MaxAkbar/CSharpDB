@@ -18,6 +18,9 @@ These notes cover changes since v4.6.6.
   and logical column types across rentals and sessions. Drain active operations
   before returning a client, reject stale rentals, and clean up unfinished
   transactions without automatically replaying commands after disconnect.
+- Prevent a queued transaction begin from blocking a schema owner's commit or
+  rollback. Cancel and drain pending begins during client disposal, and clean up
+  transactions that cannot be registered after cancellation or shutdown.
 - Preserve the selected gRPC call mode when Admin clones routed client options.
 
 ### Archive and dependency fixes

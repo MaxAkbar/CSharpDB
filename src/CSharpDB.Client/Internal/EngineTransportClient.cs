@@ -70,6 +70,9 @@ internal sealed partial class EngineTransportClient :
     private readonly object _databaseGate = new();
     private readonly object _disposeGate = new();
     private readonly ConcurrentDictionary<string, ClientTransactionSession> _transactions = new(StringComparer.Ordinal);
+    private readonly CancellationTokenSource _transactionAdmissionsShutdown = new();
+    private int _pendingTransactionBegins;
+    private TaskCompletionSource? _transactionBeginsDrained;
     private int _activeFinalizations;
     private TaskCompletionSource? _finalizationsDrained;
     private Task<Database>? _databaseTask;
@@ -672,43 +675,78 @@ internal sealed partial class EngineTransportClient :
             throw new CSharpDbClientException(
                 "Snapshot hybrid transactions require exclusive access. Close active snapshot readers first.");
 
-        // The cached Database owns the one pager/WAL and writer coordinator.
-        // A session owns only its isolated transaction, never the database file.
-        WriteTransaction transaction = await database.BeginWriteTransactionAsync(ct);
+        using var admission = CancellationTokenSource.CreateLinkedTokenSource(
+            ct, _transactionAdmissionsShutdown.Token);
+        RegisterPendingTransactionBegin();
+        // Schema admission can depend on another session committing. Pin the
+        // cached owner, but let completion/disposal acquire the client lock.
+        clientLock.ReleaseLock();
+        WriteTransaction? transaction = null;
+        ClientTransactionSession? session = null;
+        bool registered = false;
+        try
+        {
+            transaction = await database.BeginWriteTransactionAsync(admission.Token);
+            session = new ClientTransactionSession(
+                database,
+                transaction,
+                _observabilityEnabled
+                    ? database.RuntimeDiagnosticsState?.TimeProvider ??
+                      _observabilityTimeProvider
+                    : null,
+                database.RuntimeDiagnosticsState?.SessionAbandonmentThreshold ??
+                _directDatabaseOptions.ObservabilityOptions?.SessionAbandonmentThreshold ??
+                TimeSpan.FromMinutes(30));
 
-        string transactionId = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
-        var session = new ClientTransactionSession(
-            database,
-            transaction,
-            _observabilityEnabled
-                ? database.RuntimeDiagnosticsState?.TimeProvider ??
-                  _observabilityTimeProvider
-                : null,
-            database.RuntimeDiagnosticsState?.SessionAbandonmentThreshold ??
-            _directDatabaseOptions.ObservabilityOptions?.SessionAbandonmentThreshold ??
-            TimeSpan.FromMinutes(30));
-        if (!_transactions.TryAdd(transactionId, session))
+            using ClientLockLease registrationLock = await AcquireClientLockAsync(admission.Token);
+            ThrowIfDisposing();
+            ct.ThrowIfCancellationRequested();
+            string transactionId = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
+            if (!_transactions.TryAdd(transactionId, session))
+                throw new CSharpDbClientException("Failed to register the transaction session.");
+            try
+            {
+                RetainRuntimeDiagnosticsState(session);
+            }
+            catch
+            {
+                _transactions.TryRemove(transactionId, out _);
+                throw;
+            }
+            registered = true;
+
+            return new TransactionSessionInfo
+            {
+                TransactionId = transactionId,
+                ExpiresAtUtc = DateTime.MaxValue,
+            };
+        }
+        catch (OperationCanceledException exception) when (ct.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(exception.Message, exception, ct);
+        }
+        catch (OperationCanceledException) when (_transactionAdmissionsShutdown.IsCancellationRequested)
+        {
+            throw new ObjectDisposedException(nameof(EngineTransportClient));
+        }
+        finally
         {
             try
             {
-                await transaction.DisposeAsync();
+                if (!registered)
+                {
+                    if (session is not null)
+                        await DisposeTransactionSessionAsync(session);
+                    else if (transaction is not null)
+                        await transaction.DisposeAsync();
+                }
             }
             finally
             {
-                using var scope = database.EnterTemporaryTableSessionScope(session);
-                await database.ClearTemporaryTablesAsync();
+                using ClientLockLease admissionLock = await AcquireClientLockAsync(CancellationToken.None);
+                UnregisterPendingTransactionBegin();
             }
-
-            throw new CSharpDbClientException("Failed to register the transaction session.");
         }
-
-        RetainRuntimeDiagnosticsState(session);
-
-        return new TransactionSessionInfo
-        {
-            TransactionId = transactionId,
-            ExpiresAtUtc = DateTime.MaxValue,
-        };
     }
 
     public async Task<SqlExecutionResult> ExecuteInTransactionAsync(string transactionId, string sql, CancellationToken ct = default)
@@ -1202,6 +1240,7 @@ internal sealed partial class EngineTransportClient :
         ClientLockLease lifecycleBoundaryLock =
             await AcquireClientLockAsync(CancellationToken.None);
         List<ClientTransactionSession> sessionsToDispose;
+        Task? transactionBeginsDrained;
         Task? finalizationsDrained;
         Task? maintenanceLifetimesDrained;
         try
@@ -1220,6 +1259,7 @@ internal sealed partial class EngineTransportClient :
                 sessionsToDispose.Add(session);
             }
 
+            transactionBeginsDrained = _transactionBeginsDrained?.Task;
             finalizationsDrained = GetFinalizationsDrainedTask();
             maintenanceLifetimesDrained =
                 GetMaintenanceLifetimesDrainedTask();
@@ -1234,10 +1274,21 @@ internal sealed partial class EngineTransportClient :
         {
             try
             {
-                await Task.WhenAll(sessionsToDispose.Select(DisposeClaimedSessionAsync));
+                try
+                {
+                    // Cancellation callbacks may reenter the client, so never
+                    // invoke them while holding the lifecycle lock.
+                    _transactionAdmissionsShutdown.Cancel();
+                }
+                finally
+                {
+                    await Task.WhenAll(sessionsToDispose.Select(DisposeClaimedSessionAsync));
+                }
             }
             finally
             {
+                if (transactionBeginsDrained is not null)
+                    await transactionBeginsDrained;
                 if (finalizationsDrained is not null)
                     await finalizationsDrained;
                 try
@@ -1289,6 +1340,7 @@ internal sealed partial class EngineTransportClient :
                 s_disposeFlushToken.Value = previousToken;
                 DisposeClientMaintenanceDiagnostics();
                 DisposeRuntimeDiagnosticsStates();
+                _transactionAdmissionsShutdown.Dispose();
                 _lock.Dispose();
             }
         }
@@ -1587,7 +1639,8 @@ internal sealed partial class EngineTransportClient :
         // Full-image hybrid persistence requires exclusive access at session
         // completion. Incremental-durable hybrid and file owners allow overlap.
         if (SnapshotSessionRequiresExclusiveAccess &&
-            (!_transactions.IsEmpty || Volatile.Read(ref _activeFinalizations) != 0))
+            (!_transactions.IsEmpty || Volatile.Read(ref _activeFinalizations) != 0 ||
+             Volatile.Read(ref _pendingTransactionBegins) != 0))
         {
             throw new CSharpDB.Primitives.CSharpDbException(CSharpDB.Primitives.ErrorCode.Busy,
                 "Finish the active snapshot hybrid transaction before using the ordinary session or starting another transaction.");
@@ -1768,7 +1821,7 @@ internal sealed partial class EngineTransportClient :
         try
         {
             ThrowIfDisposing();
-            if (!_transactions.IsEmpty || _activeFinalizations != 0)
+            if (!_transactions.IsEmpty || _activeFinalizations != 0 || _pendingTransactionBegins != 0)
             {
                 throw new ExclusiveDatabaseAccessRejectedException(
                     activeTransactionMessage ?? "Finish active transactions before starting an exclusive operation.");
@@ -2362,8 +2415,17 @@ internal sealed partial class EngineTransportClient :
         public bool TryClaimFinalization()
             => Interlocked.CompareExchange(ref _state, 1, 0) == 0;
 
-        public ValueTask WaitForOperationsAsync(CancellationToken ct)
-            => new(_operationGate.WaitAsync(ct));
+        public async ValueTask WaitForOperationsAsync(CancellationToken ct)
+        {
+            await _operationGate.WaitAsync(ct);
+            // Cancellation can race a successful semaphore handoff. Return
+            // the gate before reporting cancellation to finalization recovery.
+            if (ct.IsCancellationRequested)
+            {
+                _operationGate.Release();
+                ct.ThrowIfCancellationRequested();
+            }
+        }
 
         public void CancelFinalizationClaim()
             => Volatile.Write(ref _state, 0);
@@ -3401,6 +3463,21 @@ internal sealed partial class EngineTransportClient :
             throw new ObjectDisposedException(nameof(EngineTransportClient));
     }
 
+    private void RegisterPendingTransactionBegin()
+    {
+        if (_pendingTransactionBegins++ == 0)
+            _transactionBeginsDrained = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    private void UnregisterPendingTransactionBegin()
+    {
+        if (--_pendingTransactionBegins == 0)
+        {
+            _transactionBeginsDrained!.TrySetResult();
+            _transactionBeginsDrained = null;
+        }
+    }
+
     private void RegisterFinalization()
     {
         if (_activeFinalizations++ == 0)
@@ -3550,7 +3627,7 @@ internal sealed partial class EngineTransportClient :
 
     private async Task ReleaseCachedDatabaseCoreAsync(CancellationToken ct, string activeReaderMessage)
     {
-        if (!_transactions.IsEmpty || _activeFinalizations != 0)
+        if (!_transactions.IsEmpty || _activeFinalizations != 0 || _pendingTransactionBegins != 0)
             throw new CSharpDbClientException(
                 "Cannot release the direct database handle while client-managed transactions are active or completing.");
 
