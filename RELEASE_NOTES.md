@@ -28,6 +28,8 @@ These notes cover changes since v4.6.6.
 - Add a published NativeAOT archive SQL smoke covering scans, primary-key lookup,
   declared types, and close/reopen persistence through the C API. Fail native
   publication on trimming or AOT warnings.
+- Support private migration reject artifacts on Linux tmpfs, including RAM-backed
+  temporary directories, while retaining owner, permission, link and ACL checks.
 - Update the optional SQL Server migration adapter's PKCS dependency to 9.0.22
   and keep its exact bundle inventories and third-party notice aligned.
 - Include all 27 solution test modules in the ordinary pull-request CI matrix.
