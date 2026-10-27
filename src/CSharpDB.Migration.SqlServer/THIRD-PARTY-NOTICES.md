@@ -30,7 +30,7 @@ Microsoft Software License Terms included at
 | System.Configuration.ConfigurationManager | 9.0.18 | MIT |
 | System.Diagnostics.EventLog | 9.0.18 | MIT |
 | System.IdentityModel.Tokens.Jwt | 8.16.0 | MIT |
-| System.Security.Cryptography.Pkcs | 9.0.18 | MIT |
+| System.Security.Cryptography.Pkcs | 9.0.22 | MIT |
 | System.Security.Cryptography.ProtectedData | 9.0.18 | MIT |
 | System.Threading.RateLimiting | 9.0.18 | MIT |
 

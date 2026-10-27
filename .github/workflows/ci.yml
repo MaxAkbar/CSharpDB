@@ -77,20 +77,26 @@ jobs:
             tests/CSharpDB.Admin.Reports.Tests/CSharpDB.Admin.Reports.Tests.csproj
             tests/CSharpDB.Admin.Forms.Tests/CSharpDB.Admin.Forms.Tests.csproj
             tests/CSharpDB.Api.Tests/CSharpDB.Api.Tests.csproj
+            tests/CSharpDB.Benchmarks.Tests/CSharpDB.Benchmarks.Tests.csproj
             tests/CSharpDB.Cli.Tests/CSharpDB.Cli.Tests.csproj
             tests/CSharpDB.CodeModules.Tests/CSharpDB.CodeModules.Tests.csproj
             tests/CSharpDB.Daemon.Tests/CSharpDB.Daemon.Tests.csproj
             tests/CSharpDB.Data.Tests/CSharpDB.Data.Tests.csproj
             tests/CSharpDB.DataGeneration.Tests/CSharpDB.DataGeneration.Tests.csproj
+            tests/CSharpDB.DataPrivacy.Tests/CSharpDB.DataPrivacy.Tests.csproj
             tests/CSharpDB.DevOps.Tests/CSharpDB.DevOps.Tests.csproj
             tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj
             tests/CSharpDB.EntityFrameworkCore.Tools.Tests/CSharpDB.EntityFrameworkCore.Tools.Tests.csproj
+            tests/CSharpDB.Mcp.Tests/CSharpDB.Mcp.Tests.csproj
             tests/CSharpDB.Migration.Access.Tests/CSharpDB.Migration.Access.Tests.csproj
             tests/CSharpDB.Migration.Compatibility.Tests/CSharpDB.Migration.Compatibility.Tests.csproj
             tests/CSharpDB.Migration.DualRun.Tests/CSharpDB.Migration.DualRun.Tests.csproj
             tests/CSharpDB.Migration.Files.Tests/CSharpDB.Migration.Files.Tests.csproj
+            tests/CSharpDB.Migration.LiteDb.Tests/CSharpDB.Migration.LiteDb.Tests.csproj
             tests/CSharpDB.Migration.MySql.Tests/CSharpDB.Migration.MySql.Tests.csproj
+            tests/CSharpDB.Migration.Retained.Tests/CSharpDB.Migration.Retained.Tests.csproj
             tests/CSharpDB.Migration.SqlServer.Tests/CSharpDB.Migration.SqlServer.Tests.csproj
+            tests/CSharpDB.Migration.Sqlite.Tests/CSharpDB.Migration.Sqlite.Tests.csproj
             tests/CSharpDB.Migration.Tests/CSharpDB.Migration.Tests.csproj
             tests/CSharpDB.Observability.Tests/CSharpDB.Observability.Tests.csproj
             tests/CSharpDB.Pipelines.Tests/CSharpDB.Pipelines.Tests.csproj
@@ -251,7 +257,29 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
 
       - name: Publish NativeAOT library
-        run: dotnet publish src/CSharpDB.Native/CSharpDB.Native.csproj -c Release -r ${{ matrix.rid }}
+        run: dotnet publish src/CSharpDB.Native/CSharpDB.Native.csproj -c Release -r ${{ matrix.rid }} -p:ILLinkTreatWarningsAsErrors=true -p:IlcTreatWarningsAsErrors=true
+
+      - name: Use private link-free temporary directory for native archive smoke (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          temp_directory="$(mktemp -d /private/tmp/csharpdb-native-archive.XXXXXX)"
+          chmod 700 "${temp_directory}"
+          echo "TMPDIR=${temp_directory}" >> "${GITHUB_ENV}"
+
+      - name: Publish native archive SQL smoke
+        run: dotnet publish tests/CSharpDB.Native.ArchiveSmoke/CSharpDB.Native.ArchiveSmoke.csproj -c Release -r ${{ matrix.rid }} --self-contained true -p:PublishAot=true -o artifacts/native-archive-smoke/${{ matrix.rid }}
+
+      - name: Run published native archive SQL smoke
+        shell: pwsh
+        run: |
+          $executableName = if ($IsWindows) { 'CSharpDB.Native.ArchiveSmoke.exe' } else { 'CSharpDB.Native.ArchiveSmoke' }
+          $executable = Join-Path 'artifacts/native-archive-smoke/${{ matrix.rid }}' $executableName
+          $library = [IO.Path]::GetFullPath('src/CSharpDB.Native/bin/Release/net10.0/${{ matrix.rid }}/publish/${{ matrix.lib }}')
+          if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) { throw "Archive smoke executable missing: $executable" }
+          if (-not (Test-Path -LiteralPath $library -PathType Leaf)) { throw "Native library missing: $library" }
+          & $executable $library
+          if ($LASTEXITCODE -ne 0) { throw "Native archive SQL smoke failed with exit code $LASTEXITCODE." }
 
       - name: Publish observability trim and NativeAOT smoke
         run: dotnet publish tests/CSharpDB.Observability.TrimSmoke/CSharpDB.Observability.TrimSmoke.csproj -c Release -r ${{ matrix.rid }} --self-contained true -p:PublishAot=true -o artifacts/observability-aot/${{ matrix.rid }}

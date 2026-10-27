@@ -370,7 +370,7 @@ function Assert-ReviewedWorkerPackageClosure {
         'System.Configuration.ConfigurationManager/9.0.18'
         'System.Diagnostics.EventLog/9.0.18'
         'System.IdentityModel.Tokens.Jwt/8.16.0'
-        'System.Security.Cryptography.Pkcs/9.0.18'
+        'System.Security.Cryptography.Pkcs/9.0.22'
         'System.Security.Cryptography.ProtectedData/9.0.18'
         'System.Threading.RateLimiting/9.0.18'
     ) | Sort-Object
