@@ -21,6 +21,17 @@ internal sealed class GrpcApiKeyClientInterceptor : Interceptor
         ClientInterceptorContext<TRequest, TResponse> context,
         AsyncUnaryCallContinuation<TRequest, TResponse> continuation)
     {
+        return continuation(request, WithHeaders(context));
+    }
+
+    public override AsyncDuplexStreamingCall<TRequest, TResponse> AsyncDuplexStreamingCall<TRequest, TResponse>(
+        ClientInterceptorContext<TRequest, TResponse> context,
+        AsyncDuplexStreamingCallContinuation<TRequest, TResponse> continuation)
+        => continuation(WithHeaders(context));
+
+    private ClientInterceptorContext<TRequest, TResponse> WithHeaders<TRequest, TResponse>(
+        ClientInterceptorContext<TRequest, TResponse> context) where TRequest : class where TResponse : class
+    {
         var metadata = new Metadata();
         if (context.Options.Headers is not null)
         {
@@ -35,10 +46,10 @@ internal sealed class GrpcApiKeyClientInterceptor : Interceptor
 
         metadata.Add(_apiKeyHeaderName, _apiKey);
         var options = context.Options.WithHeaders(metadata);
-        return continuation(request, new ClientInterceptorContext<TRequest, TResponse>(
+        return new ClientInterceptorContext<TRequest, TResponse>(
             context.Method,
             context.Host,
-            options));
+            options);
     }
 
     private static string NormalizeHeaderName(string? headerName)

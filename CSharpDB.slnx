@@ -86,6 +86,7 @@
     <Project Path="tests/CSharpDB.Tests/CSharpDB.Tests.csproj" />
     <Project Path="tests/CSharpDB.Observability.Tests/CSharpDB.Observability.Tests.csproj" />
     <Project Path="tests/CSharpDB.Observability.TrimSmoke/CSharpDB.Observability.TrimSmoke.csproj" />
+    <Project Path="tests/CSharpDB.Native.ArchiveSmoke/CSharpDB.Native.ArchiveSmoke.csproj" />
     <Project Path="tests/CSharpDB.Pipelines.Tests/CSharpDB.Pipelines.Tests.csproj" />
     <Project Path="tests/CSharpDB.Data.Tests/CSharpDB.Data.Tests.csproj" />
     <Project Path="tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj" />
@@ -115,6 +116,7 @@
     <Project Path="tests/CSharpDB.CodeModules.Tests/CSharpDB.CodeModules.Tests.csproj" />
     <Project Path="tests/CSharpDB.ExtensionSandbox.Worker/CSharpDB.ExtensionSandbox.Worker.csproj" />
     <Project Path="tests/CSharpDB.Benchmarks/CSharpDB.Benchmarks.csproj" />
+    <Project Path="tests/CSharpDB.NetworkBenchmarks/CSharpDB.NetworkBenchmarks.csproj" />
     <Project Path="tests/CSharpDB.Benchmarks.Tests/CSharpDB.Benchmarks.Tests.csproj" />
     <Project Path="tests/CSharpDB.DataGen/CSharpDB.DataGen.csproj" />
   </Folder>

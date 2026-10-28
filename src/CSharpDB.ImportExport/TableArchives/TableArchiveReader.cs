@@ -272,7 +272,7 @@ public static class TableArchiveReader
     {
         byte[] bytes = await ReadSectionAsync(stream, header.SchemaOffset, header.SchemaLength, ct);
         TableArchiveSchema schema =
-            JsonSerializer.Deserialize<TableArchiveSchema>(bytes, TableArchiveJson.Options)
+            JsonSerializer.Deserialize(bytes, TableArchiveJson.Context.TableArchiveSchemaDocument)?.ToModel()
             ?? throw new InvalidDataException("The table archive schema is empty.");
         if (schema.Columns is null)
             throw new InvalidDataException("The table archive schema columns collection is null.");
@@ -319,7 +319,7 @@ public static class TableArchiveReader
         CancellationToken ct)
     {
         byte[] bytes = await ReadSectionAsync(stream, header.ManifestOffset, header.ManifestLength, ct);
-        var manifest = JsonSerializer.Deserialize<TableArchiveManifest>(bytes, TableArchiveJson.Options)
+        var manifest = JsonSerializer.Deserialize(bytes, TableArchiveJson.Context.TableArchiveManifestDocument)?.ToModel()
             ?? throw new InvalidDataException("The table archive manifest is empty.");
         if (manifest.FormatVersion is not (
                 TableArchiveManifest.CurrentFormatVersion or

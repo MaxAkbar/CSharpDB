@@ -119,6 +119,7 @@ public sealed partial class Database : IAsyncDisposable
     }
 
     public int ActiveReaderCount => _pager.ActiveReaderCount;
+    internal int ActiveQueryReaderCount => _pager.ActiveQueryReaderCount;
 
     internal bool IsObservabilityEnabled => _observabilityOptions is not null;
 
@@ -2544,25 +2545,16 @@ public sealed partial class Database : IAsyncDisposable
     internal IDisposable EnterTemporaryTableSessionScope(object sessionKey) =>
         _temporaryTables.EnterSessionScope(sessionKey);
 
+    // Preserve hybrid Dispose-trigger persistence at a logical client boundary
+    // without closing the shared database while other transactions own it.
+    internal ValueTask PersistClientSessionBoundaryAsync() =>
+        PersistHybridStateAsync(HybridPersistenceTriggers.Dispose, CancellationToken.None);
+
     internal bool HasTemporaryTablesForCurrentSession =>
         _temporaryTables.GetTableNames().Count != 0;
 
     internal bool HasTemporaryTableContextForCurrentSession =>
         _temporaryTables.HasCurrentSessionContext;
-
-    internal async ValueTask ResetReusableSessionStateAsync()
-    {
-        if (_inTransaction || _explicitTransactionFailed)
-            throw new InvalidOperationException("Cannot reuse a database handle with an active or failed transaction.");
-        if (ActiveReaderCount != 0)
-            throw new InvalidOperationException("Cannot reuse a database handle while snapshot readers are active.");
-
-        // A physical close flushes deferred catalog state and destroys every
-        // temporary-table context. Warm handle handoff must preserve that
-        // boundary before the handle changes logical owners.
-        await FlushPendingAdvisoryStatisticsAsync(CancellationToken.None);
-        await _temporaryTables.ClearAsync();
-    }
 
     internal uint GetTableRootPage(string tableName) => _catalog.GetTableRootPage(tableName);
 
@@ -2840,8 +2832,10 @@ public sealed partial class Database : IAsyncDisposable
 
     /// <summary>Whether table CHECK expressions can invoke registered host callbacks during an update.</summary>
     public bool HasUpdateHostCallbacks(string tableName)
+        => HasUpdateHostCallbacks(GetTableSchema(tableName));
+
+    internal bool HasUpdateHostCallbacks(TableSchema? schema)
     {
-        var schema = GetTableSchema(tableName);
         if (schema is null) return true;
         foreach (var check in schema.CheckConstraints)
         {

@@ -79,10 +79,15 @@
                     <a href="#release-history">Earlier releases</a>
                     <a href="https://github.com/MaxAkbar/CSharpDB/releases">All GitHub releases ↗</a>
                 </nav>
-                <article class="news-entry unreleased" id="unreleased" data-release-status="unreleased">
+                <article class="news-entry unreleased" id="unreleased" data-release-status="unreleased" data-release-version="4.7.0">
                     <div class="news-entry-header"><span class="news-badge news-badge-unreleased">Unreleased</span><span class="news-date">Development work · not in a published package</span></div>
-                    <h2>Upcoming changes</h2>
-                    <p>Future development updates will be listed here.</p>
+                    <h2>Shared gRPC sessions and native archive fixes</h2>
+                    <ul>
+                        <li><strong>Remote clients:</strong> share bounded SDK and ADO.NET connection pools, prevent queued transaction starts from blocking commit or rollback, preserve transaction and result ownership, and add explicit native gRPC selection with experimental persistent sessions.</li>
+                        <li><strong>Native archives:</strong> fix archive-backed SQL with generated JSON metadata and add published NativeAOT checks for scans, lookups, declared types, and reopen persistence.</li>
+                        <li><strong>Maintenance:</strong> support private migration reject reports on Linux tmpfs, update the optional SQL Server migration dependency, and include all 27 test modules in pull-request CI.</li>
+                    </ul>
+                    <p class="release-note">Unary calls remain the default. Streaming is experimental and opt-in. No verified network speedup is claimed; the custom TCP prototype is excluded.</p>
                 </article>
                 <h2 id="published-releases">Published releases</h2>
                 <article class="news-entry" id="v4.6.6" data-release-status="published" data-release-version="4.6.6">

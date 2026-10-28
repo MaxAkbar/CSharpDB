@@ -61,7 +61,17 @@ public sealed class CSharpDbTransaction : DbTransaction
     {
         if (disposing && !_completed)
         {
-            try { Rollback(); } catch { /* best-effort rollback on dispose */ }
+            try
+            {
+                if (_connection.GetSession() is RemoteDatabaseSession)
+                {
+                    using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                    RollbackAsync(timeout.Token).GetAwaiter().GetResult();
+                }
+                else Rollback();
+            }
+            catch { /* best-effort rollback on dispose */ }
+            finally { _completed = true; _connection.ClearTransaction(); }
         }
         base.Dispose(disposing);
     }
@@ -70,7 +80,14 @@ public sealed class CSharpDbTransaction : DbTransaction
     {
         if (!_completed)
         {
-            try { await RollbackAsync(CancellationToken.None); } catch { }
+            try
+            {
+                using var timeout = _connection.GetSession() is RemoteDatabaseSession
+                    ? new CancellationTokenSource(TimeSpan.FromSeconds(5)) : null;
+                await RollbackAsync(timeout?.Token ?? CancellationToken.None);
+            }
+            catch { }
+            finally { _completed = true; _connection.ClearTransaction(); }
         }
     }
 }

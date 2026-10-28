@@ -13,6 +13,9 @@ public sealed class ClientRuntimeDiagnosticsCapabilityTests
 {
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
+    private static IDisposable RetainDiagnosticsCapture(EngineTransportClient client)
+        => ClientDiagnosticsTestScope.RetainRuntimeFamily(client);
+
     [Fact]
     public async Task DisabledDirectCapability_IsStableExplicitAndDoesNotOpenDatabase()
     {
@@ -223,7 +226,7 @@ public sealed class ClientRuntimeDiagnosticsCapabilityTests
     }
 
     [Fact]
-    public async Task RetainedTransactionFamily_RemainsVisibleAlongsideReplacementFamily()
+    public async Task RetainedDiagnosticsCapture_RemainsVisibleAlongsideReplacementFamily()
     {
         const string retainedDetailSql =
             "SELECT 1 AS retained_family_detail, 2 AS retained_family_second_value";
@@ -243,8 +246,14 @@ public sealed class ClientRuntimeDiagnosticsCapabilityTests
                 Ct)).Error);
             Assert.Null((await client.ExecuteSqlAsync("SELECT 10", Ct)).Error);
 
+            // A diagnostics capture may outlive the handle it sampled. A live
+            // transaction may no longer release the shared database owner.
+            using IDisposable retainedCapture = RetainDiagnosticsCapture(client);
+            await client.RollbackTransactionAsync(transaction.TransactionId, Ct);
             await client.ReleaseCachedDatabaseAsync(Ct);
             Assert.Null((await client.ExecuteSqlAsync("SELECT 2", Ct)).Error);
+            transaction = await client.BeginTransactionAsync(Ct);
+            transactionId = transaction.TransactionId;
             cursor = Assert.IsType<ForwardOnlyQueryCursor>(
                 await client.TryOpenForwardOnlyQueryCursorAsync(
                     transaction.TransactionId,
@@ -414,6 +423,7 @@ public sealed class ClientRuntimeDiagnosticsCapabilityTests
             options);
         var diagnostics = Assert.IsAssignableFrom<ICSharpDbObservabilityClient>(client);
         TransactionSessionInfo transaction = await client.BeginTransactionAsync(Ct);
+        using IDisposable retainedCapture = RetainDiagnosticsCapture(client);
         ForwardOnlyQueryCursor? transactionCursor = null;
         ForwardOnlyQueryCursor? directCursor = null;
         try
@@ -423,8 +433,10 @@ public sealed class ClientRuntimeDiagnosticsCapabilityTests
                 "SELECT 1",
                 Ct)).Error);
             Assert.Null((await client.ExecuteSqlAsync("SELECT 2", Ct)).Error);
+            await client.RollbackTransactionAsync(transaction.TransactionId, Ct);
             await client.ReleaseCachedDatabaseAsync(Ct);
             Assert.Null((await client.ExecuteSqlAsync("SELECT 3", Ct)).Error);
+            transaction = await client.BeginTransactionAsync(Ct);
 
             CSharpDbRuntimeDiagnosticsState[] states;
             lock (openedStates)
@@ -506,145 +518,42 @@ public sealed class ClientRuntimeDiagnosticsCapabilityTests
     }
 
     [Fact]
-    public async Task MixedFamilyEnablement_PreservesExactEnabledDataWithoutStartingDisabledRegistry()
+    public async Task ObservabilityEnablement_ChangesOnlyAfterSharedTransactionsFinish()
     {
-        await using var client = CreateClient(CreateOptions("mixed-enablement"));
+        await using var client = CreateClient(CreateOptions("enablement-boundary"));
         var diagnostics = Assert.IsAssignableFrom<ICSharpDbObservabilityClient>(client);
-        CSharpDbObservabilityOptions mutableOptions =
-            client.DirectDatabaseOptions.ObservabilityOptions!;
-        string? transactionId = null;
-        ForwardOnlyQueryCursor? cursor = null;
-        try
-        {
-            TransactionSessionInfo enabledTransaction = await client.BeginTransactionAsync(Ct);
-            transactionId = enabledTransaction.TransactionId;
-            Assert.Null((await client.ExecuteInTransactionAsync(
-                transactionId,
-                "SELECT 1",
-                Ct)).Error);
-            Assert.Null((await client.ExecuteSqlAsync("SELECT 2", Ct)).Error);
+        CSharpDbObservabilityOptions mutableOptions = client.DirectDatabaseOptions.ObservabilityOptions!;
+        CSharpDbRuntimeDiagnosticsState enabledState = client.CurrentRuntimeDiagnosticsState!;
+        TransactionSessionInfo enabledTransaction = await client.BeginTransactionAsync(Ct);
+        Assert.Null((await client.ExecuteInTransactionAsync(enabledTransaction.TransactionId, "SELECT 1", Ct)).Error);
+        mutableOptions.Enabled = false;
+        await Assert.ThrowsAsync<CSharpDbClientException>(async () => await client.ReleaseCachedDatabaseAsync(Ct));
+        Assert.Same(enabledState, client.CurrentRuntimeDiagnosticsState);
+        Assert.Equal(DiagnosticsAvailability.Available, (await diagnostics.GetRuntimeDiagnosticsAsync(Ct)).Metadata.Availability);
+        await client.RollbackTransactionAsync(enabledTransaction.TransactionId, Ct);
+        await client.ReleaseCachedDatabaseAsync(Ct);
 
-            mutableOptions.Enabled = false;
-            await client.ReleaseCachedDatabaseAsync(Ct);
-            CSharpDbRuntimeDiagnosticsState disabledState =
-                Assert.IsType<CSharpDbRuntimeDiagnosticsState>(
-                    client.CurrentRuntimeDiagnosticsState);
-            Assert.False(disabledState.IsEnabled);
-            Assert.Null(GetRuntimeComponents(disabledState));
+        Assert.Null((await client.ExecuteSqlAsync("SELECT 2", Ct)).Error);
+        CSharpDbRuntimeDiagnosticsState disabledState = client.CurrentRuntimeDiagnosticsState!;
+        Assert.False(disabledState.IsEnabled);
+        Assert.Null(GetRuntimeComponents(disabledState));
+        TransactionSessionInfo disabledTransaction = await client.BeginTransactionAsync(Ct);
+        Assert.Null((await client.ExecuteInTransactionAsync(disabledTransaction.TransactionId, "SELECT 3", Ct)).Error);
+        mutableOptions.Enabled = true;
+        await Assert.ThrowsAsync<CSharpDbClientException>(async () => await client.ReleaseCachedDatabaseAsync(Ct));
+        Assert.Same(disabledState, client.CurrentRuntimeDiagnosticsState);
+        Assert.Equal(DiagnosticsAvailability.Disabled, (await diagnostics.GetRuntimeDiagnosticsAsync(Ct)).Metadata.Availability);
+        Assert.Null(GetRuntimeComponents(disabledState));
+        await client.RollbackTransactionAsync(disabledTransaction.TransactionId, Ct);
+        await client.ReleaseCachedDatabaseAsync(Ct);
 
-            cursor = Assert.IsType<ForwardOnlyQueryCursor>(
-                await client.TryOpenForwardOnlyQueryCursorAsync(
-                    transactionId,
-                    "SELECT 4",
-                    Ct));
-            DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<ActiveQuerySnapshot>>
-                pendingReplacementActive = await diagnostics.GetActiveQueriesAsync(10, Ct);
-            Assert.Equal(DiagnosticsScope.Aggregate, pendingReplacementActive.Metadata.Scope);
-            RuntimeDiagnosticsFamilySection<DiagnosticsCollectionSnapshot<ActiveQuerySnapshot>>
-                establishedFamily = Assert.Single(pendingReplacementActive.RuntimeFamilies!);
-            Assert.Equal(
-                DiagnosticsAvailability.Available,
-                establishedFamily.Value.Metadata.Availability);
-            Assert.Single(establishedFamily.Value.Records!);
-            Assert.Null(GetRuntimeComponents(disabledState));
-
-            Assert.Null((await client.ExecuteSqlAsync("SELECT 3", Ct)).Error);
-            DiagnosticsTopologySnapshot<RuntimeDiagnosticsSnapshot> disabledCurrentRuntime =
-                await diagnostics.GetRuntimeDiagnosticsAsync(Ct);
-            DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<ActiveQuerySnapshot>>
-                disabledCurrentActive = await diagnostics.GetActiveQueriesAsync(10, Ct);
-            DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<RecentQuerySnapshot>>
-                disabledCurrentRecent = await diagnostics.GetRecentQueriesAsync(10, Ct);
-            DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<SessionDiagnosticsSnapshot>>
-                disabledCurrentSessions = await diagnostics.GetSessionsAsync(10, Ct);
-
-            Assert.Equal(DiagnosticsScope.Aggregate, disabledCurrentRuntime.Metadata.Scope);
-            Assert.Equal(DiagnosticsAvailability.Available, disabledCurrentRuntime.Metadata.Availability);
-            Assert.Equal(
-                [DiagnosticsAvailability.Available, DiagnosticsAvailability.Disabled],
-                disabledCurrentRuntime.RuntimeFamilies!
-                    .Select(static family => family.Value.Metadata.Availability)
-                    .Order()
-                    .ToArray());
-            Assert.Equal(DiagnosticsScope.Aggregate, disabledCurrentActive.Metadata.Scope);
-            Assert.Single(disabledCurrentActive.Aggregate.Records!);
-            Assert.Contains(
-                disabledCurrentActive.RuntimeFamilies!,
-                static family =>
-                    family.Value.Metadata.Availability == DiagnosticsAvailability.Disabled &&
-                    family.Value.Records is null);
-            Assert.NotEmpty(disabledCurrentRecent.Aggregate.Records!);
-            Assert.Equal(DiagnosticsScope.Instance, disabledCurrentSessions.Metadata.Scope);
-            Assert.Equal(
-                DiagnosticsAvailability.Disabled,
-                disabledCurrentSessions.Metadata.Availability);
-            Assert.Null(disabledCurrentSessions.Aggregate.Records);
-            Assert.Null(GetRuntimeComponents(disabledState));
-
-            await cursor.DisposeAsync();
-            cursor = null;
-            await client.RollbackTransactionAsync(transactionId, Ct);
-            transactionId = null;
-
-            TransactionSessionInfo disabledTransaction = await client.BeginTransactionAsync(Ct);
-            transactionId = disabledTransaction.TransactionId;
-            Assert.Same(
-                disabledState,
-                client.CurrentRuntimeDiagnosticsState);
-            Assert.Null((await client.ExecuteInTransactionAsync(
-                transactionId,
-                "SELECT 5",
-                Ct)).Error);
-            Assert.Null((await client.ExecuteSqlAsync("SELECT 6", Ct)).Error);
-
-            mutableOptions.Enabled = true;
-            await client.ReleaseCachedDatabaseAsync(Ct);
-            Assert.Null((await client.ExecuteSqlAsync("SELECT 7", Ct)).Error);
-            CSharpDbRuntimeDiagnosticsState reenabledState =
-                Assert.IsType<CSharpDbRuntimeDiagnosticsState>(
-                    client.CurrentRuntimeDiagnosticsState);
-            Assert.True(reenabledState.IsEnabled);
-            Assert.NotSame(disabledState, reenabledState);
-
-            cursor = Assert.IsType<ForwardOnlyQueryCursor>(
-                await client.TryOpenForwardOnlyQueryCursorAsync("SELECT 8", Ct));
-            DiagnosticsTopologySnapshot<RuntimeDiagnosticsSnapshot> enabledCurrentRuntime =
-                await diagnostics.GetRuntimeDiagnosticsAsync(Ct);
-            DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<ActiveQuerySnapshot>>
-                enabledCurrentActive = await diagnostics.GetActiveQueriesAsync(10, Ct);
-            DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<SessionDiagnosticsSnapshot>>
-                enabledCurrentSessions = await diagnostics.GetSessionsAsync(10, Ct);
-
-            Assert.Equal(DiagnosticsScope.Aggregate, enabledCurrentRuntime.Metadata.Scope);
-            Assert.Equal(
-                [DiagnosticsAvailability.Available, DiagnosticsAvailability.Disabled],
-                enabledCurrentRuntime.RuntimeFamilies!
-                    .Select(static family => family.Value.Metadata.Availability)
-                    .Order()
-                    .ToArray());
-            Assert.Single(enabledCurrentActive.Aggregate.Records!);
-            Assert.Contains(
-                enabledCurrentActive.RuntimeFamilies!,
-                static family =>
-                    family.Value.Metadata.Availability == DiagnosticsAvailability.Disabled &&
-                    family.Value.Records is null);
-            Assert.Equal(
-                DiagnosticsAvailability.Available,
-                enabledCurrentSessions.Metadata.Availability);
-            Assert.Contains(
-                enabledCurrentSessions.Aggregate.Records!,
-                static session => session.HasActiveTransaction);
-            Assert.Null(GetRuntimeComponents(disabledState));
-        }
-        finally
-        {
-            if (cursor is not null)
-                await cursor.DisposeAsync();
-            if (transactionId is not null)
-                await client.RollbackTransactionAsync(transactionId, Ct);
-        }
+        Assert.Null((await client.ExecuteSqlAsync("SELECT 4", Ct)).Error);
+        Assert.True(client.CurrentRuntimeDiagnosticsState!.IsEnabled);
+        Assert.NotSame(disabledState, client.CurrentRuntimeDiagnosticsState);
+        await using var cursor = await client.TryOpenForwardOnlyQueryCursorAsync("SELECT 5", Ct);
+        Assert.Single((await diagnostics.GetActiveQueriesAsync(10, Ct)).Aggregate.Records!);
+        Assert.Equal(0, (await diagnostics.GetRuntimeDiagnosticsAsync(Ct)).Aggregate.Connections.Value!.ActiveTransactions);
     }
-
     [Fact]
     public async Task SuppliedDisabledRuntimeState_RetainsIdentityWithoutCreatingComponents()
     {

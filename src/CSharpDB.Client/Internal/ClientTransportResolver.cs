@@ -27,7 +27,9 @@ internal static class ClientTransportResolver
                 options.HttpClient,
                 options.ApiKey,
                 options.ApiKeyHeaderName,
-                options.RouteContext),
+                options.RouteContext,
+                options.GrpcMode,
+                options.GrpcCallMode),
             CSharpDbTransport.NamedPipes => throw CreateNotImplementedTransportException(CSharpDbTransport.NamedPipes),
             _ => throw new CSharpDbClientConfigurationException($"Unsupported transport '{resolution.Transport}'."),
         };
@@ -41,6 +43,15 @@ internal static class ClientTransportResolver
             endpointUri = parsedEndpointUri;
 
         var transport = options.Transport ?? InferTransport(endpoint, endpointUri);
+        if (!Enum.IsDefined(options.GrpcMode))
+            throw new CSharpDbClientConfigurationException($"Unsupported gRPC mode '{options.GrpcMode}'.");
+        if (!Enum.IsDefined(options.GrpcCallMode))
+            throw new CSharpDbClientConfigurationException($"Unsupported gRPC call mode '{options.GrpcCallMode}'.");
+        if (options.GrpcCallMode == CSharpDbGrpcCallMode.Streaming &&
+            (transport != CSharpDbTransport.Grpc || options.GrpcMode != CSharpDbGrpcMode.Native))
+            throw new CSharpDbClientConfigurationException("Streaming gRPC requires the Grpc transport and GrpcMode.Native.");
+        if (options.GrpcMode != CSharpDbGrpcMode.Auto && transport != CSharpDbTransport.Grpc)
+            throw new CSharpDbClientConfigurationException("GrpcMode is only supported for the Grpc transport.");
         return transport switch
         {
             CSharpDbTransport.Direct => ResolveDirect(options, ResolveDirectEndpointPath(endpoint, endpointUri)),
@@ -49,6 +60,14 @@ internal static class ClientTransportResolver
             CSharpDbTransport.NamedPipes => ResolveNamedPipes(options, endpointUri),
             _ => throw new CSharpDbClientConfigurationException($"Unsupported transport '{transport}'."),
         };
+    }
+
+    internal static Uri ResolvePooledGrpcEndpoint(CSharpDbClientOptions options)
+    {
+        var resolution = Resolve(options);
+        if (resolution.Transport != CSharpDbTransport.Grpc)
+            throw new CSharpDbClientConfigurationException("Client pooling requires the Grpc transport.");
+        return resolution.EndpointUri!;
     }
 
     private static Resolution ResolveDirect(CSharpDbClientOptions options, string? endpointPath)

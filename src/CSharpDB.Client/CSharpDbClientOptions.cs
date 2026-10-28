@@ -9,6 +9,8 @@ public sealed class CSharpDbClientOptions
     public string? ConnectionString { get; init; }
     public string? DataSource { get; init; }
     public HttpClient? HttpClient { get; init; }
+    public CSharpDbGrpcMode GrpcMode { get; init; } = CSharpDbGrpcMode.Auto;
+    public CSharpDbGrpcCallMode GrpcCallMode { get; init; } = CSharpDbGrpcCallMode.Unary;
     public string? ApiKey { get; init; }
     public string ApiKeyHeaderName { get; init; } = "X-CSharpDB-Api-Key";
     public CSharpDbRouteContext? RouteContext { get; init; }

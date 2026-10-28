@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -20,6 +21,98 @@ public sealed class MigrationRejectArtifactWriterTests
     private const string SourceSnapshotIdentity = "source:snapshot:reject-artifact-test";
     private const string EvidenceFailureMessage =
         "The authoritative migration reject evidence cannot be materialized.";
+
+    [Fact]
+    public async Task WriteAsync_PublishesAndReusesPrivateArtifactOnLinuxTmpfs()
+    {
+        if (!OperatingSystem.IsLinux())
+            return;
+        string? root = CreateLinuxTmpfsRoot();
+        if (root is null)
+            return;
+        try
+        {
+            ArtifactFixture fixture = await CreateFixtureAsync(
+                [new OutcomeSpec(AcceptedRows: 1, RejectedValues: ["private-value"])]);
+            var target = new ArtifactTarget(new ArtifactSnapshot(fixture.Receipts, fixture.Ledger));
+            string path = Path.Combine(root, "rejects.jsonl");
+            var ct = TestContext.Current.CancellationToken;
+
+            MigrationRejectArtifactWriteResult first = await WriteAsync(fixture, target, path, ct);
+            byte[] original = await File.ReadAllBytesAsync(path, ct);
+            MigrationRejectArtifactWriteResult second = await WriteAsync(fixture, target, path, ct);
+
+            Assert.False(first.ReusedExistingArtifact);
+            Assert.True(second.ReusedExistingArtifact);
+            Assert.Equal(1, second.RejectedRowCount);
+            Assert.Equal(first.ArtifactDigest, second.ArtifactDigest);
+            Assert.Equal(original, await File.ReadAllBytesAsync(path, ct));
+            Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(path));
+            Assert.Single(Directory.EnumerateFiles(root));
+        }
+        finally { DeleteRoot(root); }
+    }
+
+    [Theory]
+    [InlineData(UnixFileMode.GroupRead)]
+    [InlineData(UnixFileMode.OtherRead)]
+    public async Task WriteAsync_RejectsNonPrivateExistingArtifactOnLinuxTmpfs(UnixFileMode extraAccess)
+    {
+        if (!OperatingSystem.IsLinux())
+            return;
+        string? root = CreateLinuxTmpfsRoot();
+        if (root is null)
+            return;
+        try
+        {
+            ArtifactFixture fixture = await CreateFixtureAsync([]);
+            var target = new ArtifactTarget(new ArtifactSnapshot([], []));
+            string path = Path.Combine(root, "rejects.jsonl");
+            var ct = TestContext.Current.CancellationToken;
+            _ = await WriteAsync(fixture, target, path, ct);
+            byte[] original = await File.ReadAllBytesAsync(path, ct);
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | extraAccess);
+
+            InvalidDataException error = await Assert.ThrowsAsync<InvalidDataException>(
+                async () => await WriteAsync(fixture, target, path, ct));
+
+            Assert.Contains("grants group or other access", error.Message, StringComparison.Ordinal);
+            Assert.Equal(original, await File.ReadAllBytesAsync(path, ct));
+            Assert.Single(Directory.EnumerateFiles(root));
+        }
+        finally { DeleteRoot(root); }
+    }
+
+    [Fact]
+    public async Task WriteAsync_RejectsPosixAclOnExistingArtifactOnLinuxTmpfs()
+    {
+        if (!OperatingSystem.IsLinux())
+            return;
+        string? root = CreateLinuxTmpfsRoot();
+        if (root is null)
+            return;
+        try
+        {
+            ArtifactFixture fixture = await CreateFixtureAsync([]);
+            var target = new ArtifactTarget(new ArtifactSnapshot([], []));
+            string path = Path.Combine(root, "rejects.jsonl");
+            var ct = TestContext.Current.CancellationToken;
+            _ = await WriteAsync(fixture, target, path, ct);
+            byte[] original = await File.ReadAllBytesAsync(path, ct);
+            AddLinuxPosixAclWithNoEffectiveAccess(path);
+            // The ACL mask keeps mode 0600: rejection must inspect the policy,
+            // rather than relying only on group/other mode bits.
+            Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(path));
+
+            InvalidDataException error = await Assert.ThrowsAsync<InvalidDataException>(
+                async () => await WriteAsync(fixture, target, path, ct));
+
+            Assert.Contains("contains an extended access policy", error.Message, StringComparison.Ordinal);
+            Assert.Equal(original, await File.ReadAllBytesAsync(path, ct));
+            Assert.Single(Directory.EnumerateFiles(root));
+        }
+        finally { DeleteRoot(root); }
+    }
 
     [Fact]
     public async Task WriteAsync_PublishesHeaderOnlyArtifactForEmptyEvidence()
@@ -1444,6 +1537,45 @@ public sealed class MigrationRejectArtifactWriterTests
         Directory.CreateDirectory(root);
         return root;
     }
+
+    [SupportedOSPlatform("linux")]
+    private static string? CreateLinuxTmpfsRoot()
+    {
+        const string mount = "/dev/shm";
+        if (!Directory.Exists(mount) || new DriveInfo(mount).DriveFormat != "tmpfs")
+            return null;
+        string root = Path.Combine(mount, $"csharpdb-reject-artifact-tests-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root,
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        return root;
+    }
+
+    [SupportedOSPlatform("linux")]
+    private static void AddLinuxPosixAclWithNoEffectiveAccess(string path)
+    {
+        uint otherUser = checked(LinuxEffectiveUserId() + 1);
+        IntPtr acl = LinuxAclFromText($"u::rw-,u:{otherUser}:r--,g::---,m::---,o::---");
+        if (acl == IntPtr.Zero)
+            throw new IOException("Could not create the test POSIX ACL.", new Win32Exception(Marshal.GetLastPInvokeError()));
+        try
+        {
+            if (LinuxSetFileAcl(path, 0x8000, acl) != 0)
+                throw new IOException("Could not set the test POSIX ACL.", new Win32Exception(Marshal.GetLastPInvokeError()));
+        }
+        finally { _ = LinuxFreeAcl(acl); }
+    }
+
+    [DllImport("libacl.so.1", EntryPoint = "acl_from_text", SetLastError = true)]
+    private static extern IntPtr LinuxAclFromText([MarshalAs(UnmanagedType.LPUTF8Str)] string text);
+
+    [DllImport("libacl.so.1", EntryPoint = "acl_set_file", SetLastError = true)]
+    private static extern int LinuxSetFileAcl([MarshalAs(UnmanagedType.LPUTF8Str)] string path, int type, IntPtr acl);
+
+    [DllImport("libacl.so.1", EntryPoint = "acl_free", SetLastError = true)]
+    private static extern int LinuxFreeAcl(IntPtr acl);
+
+    [DllImport("libc", EntryPoint = "geteuid")]
+    private static extern uint LinuxEffectiveUserId();
 
     private static FileStream CreatePrivateStaleFile(string path)
     {

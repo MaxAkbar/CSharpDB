@@ -16,7 +16,8 @@ public sealed class CSharpDbClient :
     ICSharpDbTableArchiveProgressExporter,
     ICSharpDbTransactionalSnapshotReader,
     ICSharpDbExclusiveSessionProvider,
-    ICSharpDbTransactionalSchemaIdentityWriter
+    ICSharpDbTransactionalSchemaIdentityWriter,
+    IScalarProjectionClient
 {
     private readonly ICSharpDbClient _inner;
 
@@ -30,6 +31,24 @@ public sealed class CSharpDbClient :
         ArgumentNullException.ThrowIfNull(options);
         return new CSharpDbClient(ClientTransportResolver.Create(options));
     }
+
+    /// <summary>Rents a validated gRPC connection. Dispose the client to return it to the shared pool.</summary>
+    public static async ValueTask<ICSharpDbClient> RentAsync(
+        CSharpDbClientOptions options, int maxPoolSize = 32, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        return new CSharpDbClient(await GrpcClientPoolRegistry.RentAsync(options, maxPoolSize, ct).ConfigureAwait(false));
+    }
+
+    /// <summary>Retires all gRPC pools for an endpoint. Active rentals are disposed on return.</summary>
+    public static ValueTask ClearPoolAsync(string endpoint)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(endpoint);
+        return GrpcClientPoolRegistry.ClearAsync(endpoint.Trim());
+    }
+
+    /// <summary>Retires all shared gRPC pools.</summary>
+    public static ValueTask ClearAllPoolsAsync() => GrpcClientPoolRegistry.ClearAsync();
 
     public static ICSharpDbShardAdminClient CreateShardAdmin(CSharpDbClientOptions options)
     {
@@ -58,6 +77,13 @@ public sealed class CSharpDbClient :
     }
 
     public string DataSource => _inner.DataSource;
+    bool IScalarProjectionClient.SupportsScalarProjection
+        => _inner is IScalarProjectionClient { SupportsScalarProjection: true };
+    ValueTask<ScalarProjectionResult> IScalarProjectionClient.ExecuteScalarProjectionAsync(
+        string sql, string? transactionId, CancellationToken cancellationToken)
+        => _inner is IScalarProjectionClient { SupportsScalarProjection: true } scalar
+            ? scalar.ExecuteScalarProjectionAsync(sql, transactionId, cancellationToken)
+            : throw new NotSupportedException("This connection does not support scalar projection.");
     public Task<DefinitionCatalogPage> ReadDefinitionCatalogAsync(string? continuationToken = null, int pageSize = 64, CancellationToken ct = default)
         => _inner is ICSharpDbDefinitionCatalogReader reader
             ? reader.ReadDefinitionCatalogAsync(continuationToken, pageSize, ct)

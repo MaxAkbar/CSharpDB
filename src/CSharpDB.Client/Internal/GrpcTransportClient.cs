@@ -19,13 +19,18 @@ internal sealed partial class GrpcTransportClient : ICSharpDbClient, ICSharpDbSh
     private readonly GrpcChannel _channel;
     private readonly CSharpDbRpc.CSharpDbRpcClient _client;
     private readonly string _endpoint;
+    private readonly CallInvoker _invoker;
+    private readonly GrpcClientLease? _lease;
+    private readonly GrpcCommandSession? _commandSession;
 
     public GrpcTransportClient(
         Uri endpoint,
         HttpClient? httpClient = null,
         string? apiKey = null,
         string? apiKeyHeaderName = null,
-        CSharpDbRouteContext? routeContext = null)
+        CSharpDbRouteContext? routeContext = null,
+        CSharpDbGrpcMode grpcMode = CSharpDbGrpcMode.Auto,
+        CSharpDbGrpcCallMode grpcCallMode = CSharpDbGrpcCallMode.Unary)
     {
         ArgumentNullException.ThrowIfNull(endpoint);
 
@@ -37,12 +42,21 @@ internal sealed partial class GrpcTransportClient : ICSharpDbClient, ICSharpDbSh
             channelOptions.HttpClient = httpClient;
             channelOptions.DisposeHttpClient = false;
         }
-        else if (endpoint.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase))
+        else if (grpcMode == CSharpDbGrpcMode.Auto &&
+                 endpoint.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase))
         {
             channelOptions.HttpHandler = new GrpcWebHandler(
                 GrpcWebMode.GrpcWeb,
                 new HttpClientHandler());
+            // This handler belongs to the transport, including when a pool retires it.
+            channelOptions.DisposeHttpClient = true;
             channelOptions.HttpVersion = System.Net.HttpVersion.Version11;
+            channelOptions.HttpVersionPolicy = HttpVersionPolicy.RequestVersionExact;
+        }
+
+        if (grpcMode == CSharpDbGrpcMode.Native)
+        {
+            channelOptions.HttpVersion = System.Net.HttpVersion.Version20;
             channelOptions.HttpVersionPolicy = HttpVersionPolicy.RequestVersionExact;
         }
 
@@ -53,8 +67,28 @@ internal sealed partial class GrpcTransportClient : ICSharpDbClient, ICSharpDbSh
         if (routeContext is not null)
             invoker = invoker.Intercept(new GrpcRouteContextClientInterceptor(routeContext));
 
+        if (grpcCallMode == CSharpDbGrpcCallMode.Streaming)
+        {
+            _commandSession = new GrpcCommandSession(invoker);
+            invoker = invoker.Intercept(_commandSession);
+        }
+
+        _invoker = invoker;
         _client = new CSharpDbRpc.CSharpDbRpcClient(invoker);
     }
+
+    private GrpcTransportClient(GrpcTransportClient owner, GrpcClientLease lease)
+    {
+        _channel = owner._channel;
+        _endpoint = owner._endpoint;
+        _lease = lease;
+        _commandSession = owner._commandSession;
+        _invoker = owner._invoker.Intercept(lease);
+        _client = new CSharpDbRpc.CSharpDbRpcClient(_invoker);
+    }
+
+    internal GrpcTransportClient CreateLease(Func<GrpcTransportClient, bool, ValueTask> release)
+        => new(this, new GrpcClientLease(this, release));
 
     public string DataSource => _endpoint;
 
@@ -219,7 +253,9 @@ internal sealed partial class GrpcTransportClient : ICSharpDbClient, ICSharpDbSh
             ct);
 
     public Task<DatabaseInfo> GetInfoAsync(CancellationToken ct = default)
-        => CallAsync(_client.GetInfoAsync(EmptyRequest, cancellationToken: ct), GrpcModelMapper.ToModel, ct);
+        => _commandSession is not null
+            ? CallSessionAsync<DatabaseInfoMessage, DatabaseInfo>(new() { GetInfo = EmptyRequest }, GrpcModelMapper.ToModel, ct)
+            : CallAsync(_client.GetInfoAsync(EmptyRequest, cancellationToken: ct), GrpcModelMapper.ToModel, ct);
 
     public Task<IReadOnlyList<string>> GetTableNamesAsync(CancellationToken ct = default)
         => CallAsync(_client.GetTableNamesAsync(EmptyRequest, cancellationToken: ct), GrpcModelMapper.ToStringList, ct);
@@ -462,23 +498,36 @@ internal sealed partial class GrpcTransportClient : ICSharpDbClient, ICSharpDbSh
         }, cancellationToken: ct), GrpcModelMapper.ToModel, ct);
 
     public Task<SqlExecutionResult> ExecuteSqlAsync(string sql, CancellationToken ct = default)
-        => CallAsync(_client.ExecuteSqlAsync(new SqlRequest { Sql = sql }, cancellationToken: ct), GrpcModelMapper.ToModel, ct);
+        => _commandSession is not null
+            ? CallSessionSqlAsync(new() { ExecuteSql = new SqlRequest { Sql = sql } }, ct)
+            : CallAsync(_client.ExecuteSqlAsync(new SqlRequest { Sql = sql }, cancellationToken: ct), GrpcModelMapper.ToModel, ct);
 
     public Task<TransactionSessionInfo> BeginTransactionAsync(CancellationToken ct = default)
-        => CallAsync(_client.BeginTransactionAsync(EmptyRequest, cancellationToken: ct), GrpcModelMapper.ToModel, ct);
+        => _commandSession is not null
+            ? CallSessionAsync<TransactionSessionInfoMessage, TransactionSessionInfo>(new() { BeginTransaction = EmptyRequest }, GrpcModelMapper.ToModel, ct)
+            : CallAsync(_client.BeginTransactionAsync(EmptyRequest, cancellationToken: ct), GrpcModelMapper.ToModel, ct);
 
     public Task<SqlExecutionResult> ExecuteInTransactionAsync(string transactionId, string sql, CancellationToken ct = default)
-        => CallAsync(_client.ExecuteInTransactionAsync(new TransactionSqlRequest
-        {
-            TransactionId = transactionId,
-            Sql = sql,
-        }, cancellationToken: ct), GrpcModelMapper.ToModel, ct);
+        => _commandSession is not null
+            ? CallSessionSqlAsync(new()
+            {
+                ExecuteInTransaction = new TransactionSqlRequest { TransactionId = transactionId, Sql = sql },
+            }, ct)
+            : CallAsync(_client.ExecuteInTransactionAsync(new TransactionSqlRequest
+            {
+                TransactionId = transactionId,
+                Sql = sql,
+            }, cancellationToken: ct), GrpcModelMapper.ToModel, ct);
 
     public Task CommitTransactionAsync(string transactionId, CancellationToken ct = default)
-        => CallEmptyAsync(_client.CommitTransactionAsync(new TransactionIdRequest { TransactionId = transactionId }, cancellationToken: ct), ct);
+        => _commandSession is not null
+            ? CallSessionEmptyAsync(new() { CommitTransaction = new TransactionIdRequest { TransactionId = transactionId } }, ct)
+            : CallEmptyAsync(_client.CommitTransactionAsync(new TransactionIdRequest { TransactionId = transactionId }, cancellationToken: ct), ct);
 
     public Task RollbackTransactionAsync(string transactionId, CancellationToken ct = default)
-        => CallEmptyAsync(_client.RollbackTransactionAsync(new TransactionIdRequest { TransactionId = transactionId }, cancellationToken: ct), ct);
+        => _commandSession is not null
+            ? CallSessionEmptyAsync(new() { RollbackTransaction = new TransactionIdRequest { TransactionId = transactionId } }, ct)
+            : CallEmptyAsync(_client.RollbackTransactionAsync(new TransactionIdRequest { TransactionId = transactionId }, cancellationToken: ct), ct);
 
     public Task<IReadOnlyList<string>> GetCollectionNamesAsync(CancellationToken ct = default)
         => CallAsync(_client.GetCollectionNamesAsync(EmptyRequest, cancellationToken: ct), GrpcModelMapper.ToStringList, ct);
@@ -575,8 +624,55 @@ internal sealed partial class GrpcTransportClient : ICSharpDbClient, ICSharpDbSh
 
     public ValueTask DisposeAsync()
     {
+        if (_lease is not null) return _lease.DisposeAsync();
+        if (_commandSession is not null) return DisposeCommandSessionAsync();
         _channel.Dispose();
         return ValueTask.CompletedTask;
+    }
+
+    private async ValueTask DisposeCommandSessionAsync()
+    {
+        try { await _commandSession!.DisposeAsync().ConfigureAwait(false); }
+        finally { _channel.Dispose(); }
+    }
+
+    // Rental guards run synchronously, before asynchronous response mapping,
+    // just as they do on the generated unary call path.
+    private Task<TResponse> DispatchSessionAsync<TResponse>(CommandSessionRequest command, CancellationToken ct)
+        where TResponse : class
+        => _lease is not null
+            ? _lease.ExecuteAsync<TResponse>(_commandSession!, command, ct)
+            : _commandSession!.ExecuteAsync<TResponse>(command, ct);
+
+    private Task<TResult> CallSessionAsync<TResponse, TResult>(
+        CommandSessionRequest command, Func<TResponse, TResult> map, CancellationToken ct)
+        where TResponse : class
+        => MapSessionAsync(DispatchSessionAsync<TResponse>(command, ct), map, ct);
+
+    private Task CallSessionEmptyAsync(CommandSessionRequest command, CancellationToken ct)
+        => MapSessionAsync(DispatchSessionAsync<Empty>(command, ct), static response => response, ct);
+
+    private Task<SqlExecutionResult> CallSessionSqlAsync(CommandSessionRequest command, CancellationToken ct)
+        => MapSessionAsync(_lease is not null
+                ? _lease.ExecuteSqlAsync(_commandSession!, command, ct)
+                : _commandSession!.ExecuteSqlAsync(command, ct),
+            static reply => GrpcModelMapper.ToSessionModel(reply.Response, reply.Metadata), ct);
+
+    private static async Task<TResult> MapSessionAsync<TResponse, TResult>(
+        Task<TResponse> response, Func<TResponse, TResult> map, CancellationToken ct)
+    {
+        try
+        {
+            return map(await response.ConfigureAwait(false));
+        }
+        catch (RpcException ex) when (ex.StatusCode == StatusCode.Cancelled && ct.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(ct);
+        }
+        catch (RpcException ex)
+        {
+            throw TranslateRpcException(ex);
+        }
     }
 
     private async Task CallEmptyAsync(AsyncUnaryCall<Empty> call, CancellationToken ct)

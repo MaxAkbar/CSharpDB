@@ -1054,8 +1054,10 @@ public sealed class MaintenanceRuntimeDiagnosticsTests
 
         try
         {
-            _ = await client.BeginTransactionAsync(Ct);
+            TransactionSessionInfo transaction = await client.BeginTransactionAsync(Ct);
             Assert.Null((await client.ExecuteSqlAsync("SELECT 1", Ct)).Error);
+            using IDisposable retainedCapture = ClientDiagnosticsTestScope.RetainRuntimeFamily(client);
+            await client.RollbackTransactionAsync(transaction.TransactionId, Ct);
             await client.ReleaseCachedDatabaseAsync(Ct);
             Assert.Null((await client.ExecuteSqlAsync(
                 "CREATE TABLE direct_backup_items (id INTEGER PRIMARY KEY)",
@@ -1161,6 +1163,8 @@ public sealed class MaintenanceRuntimeDiagnosticsTests
                 Ct);
             await validating.Task.WaitAsync(Ct);
 
+            using IDisposable retainedCapture = ClientDiagnosticsTestScope.RetainRuntimeFamily(client);
+            await client.RollbackTransactionAsync(transaction.TransactionId, Ct);
             await client.ReleaseCachedDatabaseAsync(Ct);
             Assert.Null((await client.ExecuteSqlAsync("SELECT 2", Ct)).Error);
             DiagnosticsTopologySnapshot<RuntimeDiagnosticsSnapshot> runtime =

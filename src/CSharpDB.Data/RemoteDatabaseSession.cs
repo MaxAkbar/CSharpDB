@@ -1,6 +1,8 @@
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using CSharpDB.Client;
+using CSharpDB.Client.Internal;
 using CSharpDB.Client.Models;
 using CSharpDB.Execution;
 using CSharpDB.Observability;
@@ -23,8 +25,8 @@ namespace CSharpDB.Data;
 internal sealed class RemoteDatabaseSession : ICSharpDbSession
 {
     private ICSharpDbClient? _client;
-    private readonly Func<ICSharpDbClient, ValueTask>? _releaseAsync;
     private string? _transactionId;
+    private bool _rollbackAttempted;
 
     public bool SupportsStructuredExecution => false;
     public CSharpDbObservabilityOptions? ObservabilityOptionsSnapshot => null;
@@ -34,12 +36,9 @@ internal sealed class RemoteDatabaseSession : ICSharpDbSession
     public ICSharpDbObservabilityClient? RemoteObservabilityClient =>
         Volatile.Read(ref _client) as ICSharpDbObservabilityClient;
 
-    internal RemoteDatabaseSession(
-        ICSharpDbClient client,
-        Func<ICSharpDbClient, ValueTask>? releaseAsync = null)
+    internal RemoteDatabaseSession(ICSharpDbClient client)
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
-        _releaseAsync = releaseAsync;
     }
 
     public ValueTask<QueryResult> ExecuteAsync(string sql, CancellationToken cancellationToken = default)
@@ -97,6 +96,7 @@ internal sealed class RemoteDatabaseSession : ICSharpDbSession
 
         TransactionSessionInfo info = await GetClient().BeginTransactionAsync(cancellationToken);
         _transactionId = info.TransactionId;
+        _rollbackAttempted = false;
     }
 
     public async ValueTask CommitAsync(CancellationToken cancellationToken = default)
@@ -109,6 +109,7 @@ internal sealed class RemoteDatabaseSession : ICSharpDbSession
     public async ValueTask RollbackAsync(CancellationToken cancellationToken = default)
     {
         string transactionId = _transactionId ?? throw new InvalidOperationException("No transaction is active.");
+        _rollbackAttempted = true;
         await GetClient().RollbackTransactionAsync(transactionId, cancellationToken);
         _transactionId = null;
     }
@@ -141,28 +142,100 @@ internal sealed class RemoteDatabaseSession : ICSharpDbSession
 
     public async ValueTask DisposeAsync()
     {
-        var client = _client;
-        _client = null;
+        var client = Interlocked.Exchange(ref _client, null);
+        string? transactionId = _transactionId;
         _transactionId = null;
 
         if (client is not null)
         {
-            if (_releaseAsync is null)
-                await client.DisposeAsync();
-            else
-                await _releaseAsync(client);
+            if (transactionId is not null && !_rollbackAttempted)
+            {
+                using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                try { await client.RollbackTransactionAsync(transactionId, cleanup.Token); }
+                catch { /* The SDK rental discards a connection after a failed RPC. */ }
+            }
+            await client.DisposeAsync();
         }
     }
 
     private async ValueTask<QueryResult> ExecuteSqlCoreAsync(string sql, CancellationToken cancellationToken)
     {
-        SqlExecutionResult result = _transactionId is null
-            ? await GetClient().ExecuteSqlAsync(sql, cancellationToken)
-            : await GetClient().ExecuteInTransactionAsync(_transactionId, sql, cancellationToken);
+        SqlExecutionResult result = await DispatchSqlAsync(sql, cancellationToken);
+        ThrowIfFailed(result);
+        return MaterializeResult(result);
+    }
 
+    /// <remarks>Each returned ValueTask must be consumed exactly once.</remarks>
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
+    internal async ValueTask<object?> ExecuteScalarAsync(string sql, CancellationToken cancellationToken)
+    {
+        SqlExecutionResult result;
+        if (GetClient() is IScalarProjectionClient { SupportsScalarProjection: true } scalarClient)
+        {
+            ScalarProjectionResult projected = await scalarClient.ExecuteScalarProjectionAsync(
+                sql, _transactionId, cancellationToken);
+            if (projected.HasCompactInt64)
+            {
+                DbValue value = DbValue.FromInteger(projected.Int64);
+                CoreSqlTypeKind? kind = projected.DeclaredType is { } declaredType
+                    ? MapScalarSqlTypeKind(declaredType.Kind, declaredType.Length, declaredType.Precision,
+                        declaredType.Scale, declaredType.FractionalSecondsPrecision)
+                    : null;
+                cancellationToken.ThrowIfCancellationRequested();
+                return kind is CoreSqlTypeKind declaredKind
+                    ? TypeMapper.GetClrValue(value, declaredKind)
+                    : TypeMapper.GetClrValue(value);
+            }
+            // The transport already dispatched SQL. Consume its full response
+            // without issuing another command, including for older/wider results.
+            result = projected.Fallback
+                ?? throw new InvalidOperationException("The scalar projection did not return a result.");
+        }
+        else
+        {
+            result = await DispatchSqlAsync(sql, cancellationToken);
+        }
+        ThrowIfFailed(result);
+        // Preserve conversion/validation of unused cells for wider or older-server results.
+        // The narrow path uses this response's metadata and never resends the SQL.
+        if (result.IsQuery && result.ColumnNames is { Length: 1 } && result.Columns is { Length: 1 }
+            && result.Rows is { Count: 1 } && result.Rows[0] is { Length: 1 } row)
+        {
+            DbValue value = ToDbValue(row[0]);
+            CSharpDB.Client.Models.SqlTypeDescriptor? declaredType = result.Columns[0].DeclaredType;
+            CoreSqlTypeKind? kind = declaredType is null ? null : MapScalarSqlTypeKind(declaredType);
+            cancellationToken.ThrowIfCancellationRequested();
+            return kind is CoreSqlTypeKind declaredKind
+                ? TypeMapper.GetClrValue(value, declaredKind)
+                : TypeMapper.GetClrValue(value);
+        }
+
+        await using QueryResult materialized = MaterializeResult(result);
+        if (materialized.IsQuery && materialized.Schema.Length > 0
+            && await materialized.MoveNextAsync(cancellationToken))
+        {
+            CoreColumnDefinition column = materialized.Schema[0];
+            return column.DeclaredType is null
+                ? TypeMapper.GetClrValue(materialized.Current[0])
+                : TypeMapper.GetClrValue(materialized.Current[0], column.EffectiveType);
+        }
+
+        return null;
+    }
+
+    private Task<SqlExecutionResult> DispatchSqlAsync(string sql, CancellationToken cancellationToken)
+        => _transactionId is null
+            ? GetClient().ExecuteSqlAsync(sql, cancellationToken)
+            : GetClient().ExecuteInTransactionAsync(_transactionId, sql, cancellationToken);
+
+    private static void ThrowIfFailed(SqlExecutionResult result)
+    {
         if (!string.IsNullOrWhiteSpace(result.Error))
             throw new CSharpDbException(ErrorCode.Unknown, result.Error);
+    }
 
+    private static QueryResult MaterializeResult(SqlExecutionResult result)
+    {
         if (!result.IsQuery)
             return new QueryResult(result.RowsAffected);
 
@@ -237,39 +310,62 @@ internal sealed class RemoteDatabaseSession : ICSharpDbSession
     private static CSharpDB.Primitives.SqlTypeDescriptor MapSqlTypeDescriptor(
         CSharpDB.Client.Models.SqlTypeDescriptor type)
         => CSharpDB.Primitives.SqlTypeDescriptor.Create(
-            type.Kind switch
-            {
-                CSharpDB.Client.Models.SqlTypeKind.Boolean => CSharpDB.Primitives.SqlTypeKind.Boolean,
-                CSharpDB.Client.Models.SqlTypeKind.TinyInt => CSharpDB.Primitives.SqlTypeKind.TinyInt,
-                CSharpDB.Client.Models.SqlTypeKind.SmallInt => CSharpDB.Primitives.SqlTypeKind.SmallInt,
-                CSharpDB.Client.Models.SqlTypeKind.Integer => CSharpDB.Primitives.SqlTypeKind.Integer,
-                CSharpDB.Client.Models.SqlTypeKind.BigInt => CSharpDB.Primitives.SqlTypeKind.BigInt,
-                CSharpDB.Client.Models.SqlTypeKind.Real => CSharpDB.Primitives.SqlTypeKind.Real,
-                CSharpDB.Client.Models.SqlTypeKind.Double => CSharpDB.Primitives.SqlTypeKind.Double,
-                CSharpDB.Client.Models.SqlTypeKind.Decimal => CSharpDB.Primitives.SqlTypeKind.Decimal,
-                CSharpDB.Client.Models.SqlTypeKind.Char => CSharpDB.Primitives.SqlTypeKind.Char,
-                CSharpDB.Client.Models.SqlTypeKind.VarChar => CSharpDB.Primitives.SqlTypeKind.VarChar,
-                CSharpDB.Client.Models.SqlTypeKind.Text => CSharpDB.Primitives.SqlTypeKind.Text,
-                CSharpDB.Client.Models.SqlTypeKind.Binary => CSharpDB.Primitives.SqlTypeKind.Binary,
-                CSharpDB.Client.Models.SqlTypeKind.VarBinary => CSharpDB.Primitives.SqlTypeKind.VarBinary,
-                CSharpDB.Client.Models.SqlTypeKind.Blob => CSharpDB.Primitives.SqlTypeKind.Blob,
-                CSharpDB.Client.Models.SqlTypeKind.Uuid => CSharpDB.Primitives.SqlTypeKind.Uuid,
-                CSharpDB.Client.Models.SqlTypeKind.Date => CSharpDB.Primitives.SqlTypeKind.Date,
-                CSharpDB.Client.Models.SqlTypeKind.Time => CSharpDB.Primitives.SqlTypeKind.Time,
-                CSharpDB.Client.Models.SqlTypeKind.Timestamp => CSharpDB.Primitives.SqlTypeKind.Timestamp,
-                CSharpDB.Client.Models.SqlTypeKind.TimestampWithTimeZone => CSharpDB.Primitives.SqlTypeKind.TimestampWithTimeZone,
-                CSharpDB.Client.Models.SqlTypeKind.IntervalYearToMonth => CSharpDB.Primitives.SqlTypeKind.IntervalYearToMonth,
-                CSharpDB.Client.Models.SqlTypeKind.IntervalDayToSecond => CSharpDB.Primitives.SqlTypeKind.IntervalDayToSecond,
-                CSharpDB.Client.Models.SqlTypeKind.Json => CSharpDB.Primitives.SqlTypeKind.Json,
-                CSharpDB.Client.Models.SqlTypeKind.Xml => CSharpDB.Primitives.SqlTypeKind.Xml,
-                CSharpDB.Client.Models.SqlTypeKind.Bit => CSharpDB.Primitives.SqlTypeKind.Bit,
-                CSharpDB.Client.Models.SqlTypeKind.VarBit => CSharpDB.Primitives.SqlTypeKind.VarBit,
-                _ => throw new InvalidOperationException($"Unsupported logical SQL type '{type.Kind}'."),
-            },
+            MapSqlTypeKind(type.Kind),
             type.Length,
             type.Precision,
             type.Scale,
             type.FractionalSecondsPrecision);
+
+    private static CoreSqlTypeKind MapScalarSqlTypeKind(CSharpDB.Client.Models.SqlTypeDescriptor type)
+        => MapScalarSqlTypeKind(type.Kind, type.Length, type.Precision,
+            type.Scale, type.FractionalSecondsPrecision);
+
+    private static CoreSqlTypeKind MapScalarSqlTypeKind(
+        CSharpDB.Client.Models.SqlTypeKind declaredKind, int? length, int? precision,
+        int? scale, int? fractionalSecondsPrecision)
+    {
+        CoreSqlTypeKind kind = MapSqlTypeKind(declaredKind);
+        // Every supported kind accepts absent facets. Keep the existing validator
+        // for any supplied facet, including zero, and run it before cancellation.
+        if (length.HasValue || precision.HasValue || scale.HasValue
+            || fractionalSecondsPrecision.HasValue)
+        {
+            _ = CoreSqlTypeDescriptor.Create(
+                kind, length, precision, scale, fractionalSecondsPrecision);
+        }
+        return kind;
+    }
+
+    private static CoreSqlTypeKind MapSqlTypeKind(CSharpDB.Client.Models.SqlTypeKind kind)
+        => kind switch
+        {
+            CSharpDB.Client.Models.SqlTypeKind.Boolean => CSharpDB.Primitives.SqlTypeKind.Boolean,
+            CSharpDB.Client.Models.SqlTypeKind.TinyInt => CSharpDB.Primitives.SqlTypeKind.TinyInt,
+            CSharpDB.Client.Models.SqlTypeKind.SmallInt => CSharpDB.Primitives.SqlTypeKind.SmallInt,
+            CSharpDB.Client.Models.SqlTypeKind.Integer => CSharpDB.Primitives.SqlTypeKind.Integer,
+            CSharpDB.Client.Models.SqlTypeKind.BigInt => CSharpDB.Primitives.SqlTypeKind.BigInt,
+            CSharpDB.Client.Models.SqlTypeKind.Real => CSharpDB.Primitives.SqlTypeKind.Real,
+            CSharpDB.Client.Models.SqlTypeKind.Double => CSharpDB.Primitives.SqlTypeKind.Double,
+            CSharpDB.Client.Models.SqlTypeKind.Decimal => CSharpDB.Primitives.SqlTypeKind.Decimal,
+            CSharpDB.Client.Models.SqlTypeKind.Char => CSharpDB.Primitives.SqlTypeKind.Char,
+            CSharpDB.Client.Models.SqlTypeKind.VarChar => CSharpDB.Primitives.SqlTypeKind.VarChar,
+            CSharpDB.Client.Models.SqlTypeKind.Text => CSharpDB.Primitives.SqlTypeKind.Text,
+            CSharpDB.Client.Models.SqlTypeKind.Binary => CSharpDB.Primitives.SqlTypeKind.Binary,
+            CSharpDB.Client.Models.SqlTypeKind.VarBinary => CSharpDB.Primitives.SqlTypeKind.VarBinary,
+            CSharpDB.Client.Models.SqlTypeKind.Blob => CSharpDB.Primitives.SqlTypeKind.Blob,
+            CSharpDB.Client.Models.SqlTypeKind.Uuid => CSharpDB.Primitives.SqlTypeKind.Uuid,
+            CSharpDB.Client.Models.SqlTypeKind.Date => CSharpDB.Primitives.SqlTypeKind.Date,
+            CSharpDB.Client.Models.SqlTypeKind.Time => CSharpDB.Primitives.SqlTypeKind.Time,
+            CSharpDB.Client.Models.SqlTypeKind.Timestamp => CSharpDB.Primitives.SqlTypeKind.Timestamp,
+            CSharpDB.Client.Models.SqlTypeKind.TimestampWithTimeZone => CSharpDB.Primitives.SqlTypeKind.TimestampWithTimeZone,
+            CSharpDB.Client.Models.SqlTypeKind.IntervalYearToMonth => CSharpDB.Primitives.SqlTypeKind.IntervalYearToMonth,
+            CSharpDB.Client.Models.SqlTypeKind.IntervalDayToSecond => CSharpDB.Primitives.SqlTypeKind.IntervalDayToSecond,
+            CSharpDB.Client.Models.SqlTypeKind.Json => CSharpDB.Primitives.SqlTypeKind.Json,
+            CSharpDB.Client.Models.SqlTypeKind.Xml => CSharpDB.Primitives.SqlTypeKind.Xml,
+            CSharpDB.Client.Models.SqlTypeKind.Bit => CSharpDB.Primitives.SqlTypeKind.Bit,
+            CSharpDB.Client.Models.SqlTypeKind.VarBit => CSharpDB.Primitives.SqlTypeKind.VarBit,
+            _ => throw new InvalidOperationException($"Unsupported logical SQL type '{kind}'."),
+        };
 
     private static CoreForeignKeyDefinition MapForeignKeyDefinition(CSharpDB.Client.Models.ForeignKeyDefinition foreignKey)
         => new()

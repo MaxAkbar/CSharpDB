@@ -1267,10 +1267,11 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
             return false;
         }
 
-        // ext2/3/4 enforce uid and mode bits. EOPNOTSUPP therefore means the
+        // ext2/3/4 and tmpfs enforce uid and mode bits. EOPNOTSUPP means the
         // queried optional NFSv4/richacl family is not implemented, not that
         // an unverified access policy was accepted.
-        return unchecked((ulong)(long)status.Type) == LinuxExtFileSystem;
+        ulong fileSystem = unchecked((ulong)(long)status.Type);
+        return fileSystem is LinuxExtFileSystem or LinuxTmpFileSystem;
     }
 
     private static void RequireUnixTemporaryIdentity(
@@ -1571,6 +1572,7 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
     private const int UnixAtEmptyPath = 0x1000;
     private const uint LinuxStatxHardLinkCount = 0x0004;
     private const ulong LinuxExtFileSystem = 0x0000EF53;
+    private const ulong LinuxTmpFileSystem = 0x01021994;
     private const int LinuxNoExtendedAttribute = 61;
     private const int LinuxOperationNotSupported = 95;
     private const int DarwinNoEntry = 2;

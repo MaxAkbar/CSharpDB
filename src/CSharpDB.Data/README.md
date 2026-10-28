@@ -164,8 +164,77 @@ Connection-string rules:
 
 - Embedded/direct mode: use `Data Source=...`
 - Daemon-backed mode: use `Transport=Grpc;Endpoint=http://...`
-- `Data Source`, `Load From`, and connection pooling are embedded-only options
+- `Data Source` and `Load From` are embedded-only options
+- Remote `Pooling=true` is supported with `Transport=Grpc`; pooling defaults to `false`
 - `Endpoint` requires an explicit `Transport`
+- `Grpc Mode=Native` explicitly requires HTTP/2 with `Transport=Grpc`;
+  omitted or `Grpc Mode=Auto` preserves the existing compatibility behavior
+
+For a local HTTP/2-only daemon listener, use:
+
+```text
+Transport=Grpc;Grpc Mode=Native;Endpoint=http://127.0.0.1:5821
+```
+
+Configure the listener using the daemon's
+[native gRPC guide](../CSharpDB.Daemon/README.md#native-http2-grpc).
+This selects the wire protocol. Pooling is a separate option; remote
+server-side prepared handles are not implemented.
+
+### Remote gRPC pooling
+
+For applications that open and close an ADO.NET connection for each command,
+opt into reuse of validated gRPC clients and their channels:
+
+```text
+Transport=Grpc;Endpoint=http://localhost:5000;Pooling=true;Max Pool Size=32
+```
+
+The pool lives in `CSharpDB.Client`. ADO.NET rents through
+`CSharpDbClient.RentAsync`; direct SDK callers and ADO.NET share retained
+connections when endpoint, mode, routing, credentials, HTTP client, and pool
+capacity match. See the [SDK pooling API](../CSharpDB.Client/README.md#shared-grpc-pooling).
+
+Each new physical client performs the existing `GetInfo` check. A warm logical
+open rents that client without a validation RPC. `Max Pool Size` (default 32)
+limits simultaneous leases per configuration; further opens wait and honor
+the `OpenAsync` cancellation token. Pools isolate endpoints, gRPC modes,
+routes, credentials, caller-supplied HTTP clients, and pool sizes.
+
+Closing a logical connection rolls back its unfinished transaction before
+returning the client. Failed or canceled RPCs discard the client; commands
+are never automatically replayed. Rollback on disposal has a five-second
+cleanup deadline. An unacknowledged rollback does not guarantee that the
+server released its transaction, and a warm open does not prove the server
+is reachable: the next RPC can still fail.
+
+Families with no active leases expire after two minutes of inactivity,
+checked every 30 seconds. `ClearPool`/`ClearPoolAsync` with a remote connection
+string retire all configurations for its endpoint; `ClearAllPools` also
+clears remote pools. Idle clients are disposed immediately, active leases
+are disposed on return, and blocked opens can join a new pool. Caller-owned
+`HttpClient` objects remain caller-owned.
+
+With the default unary call mode, API-key authentication occurs per RPC.
+Remote server-side prepared statement handles are not implemented.
+
+### Experimental persistent command sessions
+
+```text
+Transport=Grpc;Grpc Mode=Native;Grpc Call Mode=Streaming;Endpoint=http://127.0.0.1:5821;Pooling=true;Max Pool Size=32
+```
+
+This uses the SDK's experimental persistent native gRPC session for SQL,
+transactions, and `GetInfo`, with one command in flight per physical session.
+Authentication and protocol negotiation happen when the stream opens.
+SDK rentals and ADO.NET connections with matching options share that stream;
+unary and streaming call modes use separate pool families. Closing a
+connection resets its transactions before reuse. Active cancellation or a
+disconnect closes the stream and triggers server transaction cleanup;
+commands, including commits, are never replayed automatically. See the
+[SDK session guide](../CSharpDB.Client/README.md#experimental-persistent-command-sessions)
+for the protocol and failure behavior. Omit `Grpc Call Mode` to retain unary
+calls. Explicit `Grpc Mode=Native` is required for streaming.
 
 For a daemon host, `Grpc` is the primary transport today:
 
@@ -180,7 +249,7 @@ Transport guidance:
 - `Direct` with `Data Source=...` is still faster than any network hop when the caller can open the database locally
 - `Grpc` is the fastest supported network transport in the current CSharpDB stack
 - `NamedPipes` is not implemented end to end today, so do not target it yet for daemon-backed ADO.NET
-- for daemon-backed workloads, reuse open connections instead of reconnecting for each command
+- for daemon-backed workloads, reuse open connections or enable gRPC pooling for frequent open/close cycles
 
 ## In-Memory Connection Strings
 

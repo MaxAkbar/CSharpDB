@@ -129,7 +129,7 @@ public static class TableArchiveWriter
         TableArchiveSchema archiveSchema = TableArchiveSchema.FromTableSchema(schema, secondaryIndexes);
         byte[] schemaBytes = JsonSerializer.SerializeToUtf8Bytes(
             archiveSchema,
-            TableArchiveJson.Options);
+            TableArchiveJson.Context.TableArchiveSchema);
         await destination.WriteAsync(schemaBytes, ct);
         string schemaDigest = EncodeDigest(SHA256.HashData(schemaBytes));
 
@@ -220,7 +220,7 @@ public static class TableArchiveWriter
             },
         };
         long manifestOffset = destination.Position;
-        byte[] manifestBytes = JsonSerializer.SerializeToUtf8Bytes(manifest, TableArchiveJson.Options);
+        byte[] manifestBytes = JsonSerializer.SerializeToUtf8Bytes(manifest, TableArchiveJson.Context.TableArchiveManifest);
         await destination.WriteAsync(manifestBytes, ct);
 
         destination.Position = 0;

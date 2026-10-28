@@ -1,47 +1,45 @@
 # What's New
 
-## CSharpDB 4.6.6
+## CSharpDB 4.7.0
 
-CSharpDB 4.6.6 improves durable write throughput, prepared queries, and bounded
-primary-key reads while strengthening reader snapshot, buffered-row, and concurrent
-WAL-read correctness.
-These notes cover changes since v4.6.5.
+CSharpDB 4.7.0 establishes shared SDK and ADO.NET gRPC connection/session handling
+and fixes archive-backed SQL in the compiled native library.
+These notes cover changes since v4.6.6.
 
-### Query and write improvements
+### Remote client foundation
 
-- Reuse prepared SELECT plans across parameter values and support bounded integer
-  primary-key ranges through pooled readers and ordinary queries.
-- Preserve reader catalog snapshots across commits and checkpoints, including
-  schema metadata used by existing readers.
-- Preserve committed row-count metadata during writes and restore it after
-  publication, avoiding unnecessary full-table scans for reader `COUNT(*)` queries.
-- Reduce table-scan, LIMIT, snapshot-pager, and leaf-prefetch allocations. Forward
-  intact row batches while preserving ownership and mixed row/batch traversal.
-- Streamline primary-key mutations and INSERT execution by reusing column ordinals,
-  avoiding per-row observer allocations, and skipping redundant canonical value
-  conversions.
-- Reduce durable-write checkpoint stalls and improve WAL/checkpoint lifecycle
-  handling and storage-page ownership.
+- Share physical gRPC clients between SDK rentals and pooled ADO.NET connections
+  with matching options. Bound pool capacity, honor cancellation while waiting,
+  and isolate endpoints, credentials, routes, and caller-owned HTTP clients.
+- Add explicit native HTTP/2 gRPC selection and experimental persistent command
+  sessions for SQL and transactions. Existing Auto/unary defaults remain in
+  place; streaming requires an explicit opt-in.
+- Preserve transaction ownership, private temporary-table state, result schemas,
+  and logical column types across rentals and sessions. Drain active operations
+  before returning a client, reject stale rentals, and clean up unfinished
+  transactions without automatically replaying commands after disconnect.
+- Prevent a queued transaction begin from blocking a schema owner's commit or
+  rollback. Cancel and drain pending begins during client disposal, and clean up
+  transactions that cannot be registered after cancellation or shutdown.
+- Preserve the selected gRPC call mode when Admin clones routed client options.
 
-### Storage correctness
+### Archive and dependency fixes
 
-- Prevent checkpoint reset or retained-tail compaction from invalidating WAL
-  offsets used during write-conflict resolution. This fixes a concurrency race
-  that could cause short WAL reads or return incorrect page contents.
-- Defer checkpoint finalization while durable commits still have unpublished WAL
-  offsets, preserving correct reads after those commits complete.
-- Add deterministic regression coverage for reset and compaction, including stale
-  offsets that remain within file bounds, cancellation, lock release, and forward
-  progress. The database and WAL formats are unchanged.
+- Fix external archive table registration in the NativeAOT library by generating
+  schema and manifest JSON metadata. Keep existing archive JSON bytes, enum
+  validation, legacy omitted-field defaults, and explicit-null rejection.
+- Add a published NativeAOT archive SQL smoke covering scans, primary-key lookup,
+  declared types, and close/reopen persistence through the C API. Fail native
+  publication on trimming or AOT warnings.
+- Support private migration reject artifacts on Linux tmpfs, including RAM-backed
+  temporary directories, while retaining owner, permission, link and ACL checks.
+- Update the optional SQL Server migration adapter's PKCS dependency to 9.0.22
+  and keep its exact bundle inventories and third-party notice aligned.
+- Include all 27 solution test modules in the ordinary pull-request CI matrix.
 
-### Dependencies and maintenance
+### Scope and support
 
-- Update gRPC/Protobuf, SQL Server migration dependencies, WebView2, OpenTelemetry,
-  Scalar, and test tooling.
-- Retain Microsoft.OpenApi 2.12.0 for compatibility with
-  Microsoft.AspNetCore.OpenApi 10.0.12 on .NET 10.
-
-### Performance guardrails
-
-- Validate performance evidence integrity and reject incomplete or inconsistent
-  comparison evidence.
+Persistent streaming remains experimental and opt-in. This release does not
+include the custom TCP prototype or remote prepared-statement handles, and no
+verified network performance improvement is claimed. The native archive smoke
+checks the C API; it does not establish remote gRPC support under NativeAOT.

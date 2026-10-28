@@ -663,6 +663,8 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbDefinitionC
             ConnectionString = options.ConnectionString,
             DataSource = options.DataSource,
             HttpClient = options.HttpClient,
+            GrpcMode = options.GrpcMode,
+            GrpcCallMode = options.GrpcCallMode,
             ApiKey = options.ApiKey,
             ApiKeyHeaderName = options.ApiKeyHeaderName,
             RouteContext = routeContext,

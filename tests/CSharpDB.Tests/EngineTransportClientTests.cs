@@ -1222,7 +1222,7 @@ public sealed class EngineTransportClientTests
     }
 
     [Fact]
-    public async Task ClientManagedTransactionFailure_DoesNotRecycleUncertainDatabaseState()
+    public async Task ClientManagedTransactionFailure_RollsBackIsolatedStateAndKeepsSharedOwner()
     {
         string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_engine_transport_failed_reuse_{Guid.NewGuid():N}.db");
         int openCount = 0;
@@ -1260,7 +1260,7 @@ public sealed class EngineTransportClientTests
                 await client.GetRowCountAsync(
                     "failed_transaction_reuse",
                     TestContext.Current.CancellationToken));
-            Assert.Equal(2, Volatile.Read(ref openCount));
+            Assert.Equal(1, Volatile.Read(ref openCount));
         }
         finally
         {
@@ -1269,51 +1269,32 @@ public sealed class EngineTransportClientTests
     }
 
     [Fact]
-    public async Task ClientManagedTransactionCompletion_PreservesCompetingOrdinaryHandle()
+    public async Task ClientManagedTransactionCompletion_SharesOrdinaryOwnerWithoutExposingUncommittedRows()
     {
-        Database competingDatabase = await Database.OpenInMemoryAsync(
-            TestContext.Current.CancellationToken);
-        bool competingDatabaseHandedOff = false;
         int openCount = 0;
-
-        try
-        {
-            await using var client = new EngineTransportClient(
-                ":memory:competing-handle",
-                async (_, ct) =>
-                {
-                    if (Interlocked.Increment(ref openCount) == 2)
-                    {
-                        competingDatabaseHandedOff = true;
-                        return competingDatabase;
-                    }
-
-                    return await Database.OpenInMemoryAsync(ct);
-                });
-
-            Assert.Null((await client.ExecuteSqlAsync(
-                "CREATE TABLE competing_handle (id INTEGER PRIMARY KEY);",
-                TestContext.Current.CancellationToken)).Error);
-
-            TransactionSessionInfo transaction = await client.BeginTransactionAsync(TestContext.Current.CancellationToken);
-            Assert.Empty(await client.GetTableNamesAsync(TestContext.Current.CancellationToken));
-            Assert.Equal(2, Volatile.Read(ref openCount));
-
-            await client.RollbackTransactionAsync(transaction.TransactionId, TestContext.Current.CancellationToken);
-            Assert.Same(
-                competingDatabase,
-                await client.TryGetDatabaseAsync(TestContext.Current.CancellationToken));
-            Assert.Equal(2, Volatile.Read(ref openCount));
-        }
-        finally
-        {
-            if (!competingDatabaseHandedOff)
-                await competingDatabase.DisposeAsync();
-        }
+        await using var client = new EngineTransportClient(
+            ":memory:shared-owner",
+            async (_, ct) =>
+            {
+                Interlocked.Increment(ref openCount);
+                return await Database.OpenInMemoryAsync(ct);
+            });
+        Assert.Null((await client.ExecuteSqlAsync(
+            "CREATE TABLE shared_owner (id INTEGER PRIMARY KEY); INSERT INTO shared_owner VALUES (1);",
+            TestContext.Current.CancellationToken)).Error);
+        Database? owner = await client.TryGetDatabaseAsync(TestContext.Current.CancellationToken);
+        TransactionSessionInfo transaction = await client.BeginTransactionAsync(TestContext.Current.CancellationToken);
+        await client.ExecuteInTransactionAsync(transaction.TransactionId,
+            "INSERT INTO shared_owner VALUES (2);", TestContext.Current.CancellationToken);
+        Assert.Equal(1, await client.GetRowCountAsync("shared_owner", TestContext.Current.CancellationToken));
+        Assert.Same(owner, await client.TryGetDatabaseAsync(TestContext.Current.CancellationToken));
+        await client.RollbackTransactionAsync(transaction.TransactionId, TestContext.Current.CancellationToken);
+        Assert.Equal(1, await client.GetRowCountAsync("shared_owner", TestContext.Current.CancellationToken));
+        Assert.Equal(1, Volatile.Read(ref openCount));
     }
 
     [Fact]
-    public async Task ClientManagedTransactionCompletion_DoesNotAdoptAfterTransientOrdinaryOpen()
+    public async Task ClientManagedTransactionCompletion_RejectsReleaseUntilTransactionEnds()
     {
         int openCount = 0;
 
@@ -1327,16 +1308,18 @@ public sealed class EngineTransportClientTests
 
         TransactionSessionInfo transaction = await client.BeginTransactionAsync(TestContext.Current.CancellationToken);
         Assert.Empty(await client.GetTableNamesAsync(TestContext.Current.CancellationToken));
-        await client.ReleaseCachedDatabaseAsync(TestContext.Current.CancellationToken);
-        Assert.Equal(2, Volatile.Read(ref openCount));
+        await Assert.ThrowsAsync<CSharpDbClientException>(async () =>
+            await client.ReleaseCachedDatabaseAsync(TestContext.Current.CancellationToken));
+        Assert.Equal(1, Volatile.Read(ref openCount));
 
         await client.RollbackTransactionAsync(transaction.TransactionId, TestContext.Current.CancellationToken);
+        await client.ReleaseCachedDatabaseAsync(TestContext.Current.CancellationToken);
         Assert.Empty(await client.GetTableNamesAsync(TestContext.Current.CancellationToken));
-        Assert.Equal(3, Volatile.Read(ref openCount));
+        Assert.Equal(2, Volatile.Read(ref openCount));
     }
 
     [Fact]
-    public async Task OverlappingClientManagedTransactions_DoNotAdoptStaleDatabaseHandle()
+    public async Task OverlappingClientManagedTransactions_KeepCommittedRowsInSharedOwner()
     {
         int openCount = 0;
 
@@ -1348,6 +1331,9 @@ public sealed class EngineTransportClientTests
                 return await Database.OpenInMemoryAsync(ct);
             });
 
+        Assert.Null((await client.ExecuteSqlAsync(
+            "CREATE TABLE shared_overlap (id INTEGER PRIMARY KEY);",
+            TestContext.Current.CancellationToken)).Error);
         TransactionSessionInfo first = await client.BeginTransactionAsync(
             TestContext.Current.CancellationToken);
         TransactionSessionInfo second = await client.BeginTransactionAsync(
@@ -1355,13 +1341,13 @@ public sealed class EngineTransportClientTests
 
         await client.ExecuteInTransactionAsync(
             first.TransactionId,
-            "CREATE TABLE stale_overlap_schema (id INTEGER PRIMARY KEY);",
+            "INSERT INTO shared_overlap VALUES (1);",
             TestContext.Current.CancellationToken);
         await client.CommitTransactionAsync(first.TransactionId, TestContext.Current.CancellationToken);
         await client.RollbackTransactionAsync(second.TransactionId, TestContext.Current.CancellationToken);
 
-        Assert.Empty(await client.GetTableNamesAsync(TestContext.Current.CancellationToken));
-        Assert.Equal(3, Volatile.Read(ref openCount));
+        Assert.Equal(1, await client.GetRowCountAsync("shared_overlap", TestContext.Current.CancellationToken));
+        Assert.Equal(1, Volatile.Read(ref openCount));
     }
 
     [Fact]
@@ -1450,6 +1436,11 @@ public sealed class EngineTransportClientTests
                 TestContext.Current.CancellationToken);
             await Task.Delay(50, TestContext.Current.CancellationToken);
             Assert.False(commitTask.IsCompleted);
+            await Assert.ThrowsAsync<CSharpDbClientException>(async () =>
+                await client.ReleaseCachedDatabaseAsync(TestContext.Current.CancellationToken));
+            Exception maintenanceRejection = await Assert.ThrowsAnyAsync<Exception>(async () =>
+                await client.OpenExclusiveSessionAsync(TestContext.Current.CancellationToken));
+            Assert.Contains("Finish active transactions", maintenanceRejection.Message, StringComparison.Ordinal);
 
             allowExecute.Set();
             SqlExecutionResult result = await executeTask;
@@ -1586,7 +1577,7 @@ public sealed class EngineTransportClientTests
     }
 
     [Fact]
-    public async Task BeginTransaction_ActiveSnapshotReaderRestoresCachedDatabase()
+    public async Task BeginTransaction_CoexistsWithSnapshotReaderOnSharedDatabase()
     {
         string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_engine_transport_snapshot_guard_{Guid.NewGuid():N}.db");
         int openCount = 0;
@@ -1605,9 +1596,9 @@ public sealed class EngineTransportClientTests
                 await client.TryGetDatabaseAsync(TestContext.Current.CancellationToken));
             using (Database.ReaderSession reader = database.CreateReaderSession())
             {
-                CSharpDbClientException exception = await Assert.ThrowsAsync<CSharpDbClientException>(
-                    async () => await client.BeginTransactionAsync(TestContext.Current.CancellationToken));
-                Assert.Contains("snapshot readers", exception.Message, StringComparison.OrdinalIgnoreCase);
+                TransactionSessionInfo overlapping = await client.BeginTransactionAsync(TestContext.Current.CancellationToken);
+                await client.RollbackTransactionAsync(overlapping.TransactionId, TestContext.Current.CancellationToken);
+                Assert.Same(database, await client.TryGetDatabaseAsync(TestContext.Current.CancellationToken));
             }
 
             TransactionSessionInfo transaction = await client.BeginTransactionAsync(TestContext.Current.CancellationToken);

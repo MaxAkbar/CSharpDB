@@ -117,7 +117,15 @@ internal static class TypeMapper
         if (value.IsNull)
             return DBNull.Value;
 
-        return type.Kind switch
+        return GetClrValue(value, type.Kind);
+    }
+
+    internal static object GetClrValue(DbValue value, SqlTypeKind kind)
+    {
+        if (value.IsNull)
+            return DBNull.Value;
+
+        return kind switch
         {
             SqlTypeKind.Boolean => value.AsInteger != 0,
             SqlTypeKind.TinyInt => checked((byte)value.AsInteger),
