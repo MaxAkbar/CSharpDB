@@ -157,11 +157,11 @@ function Assert-ReviewedWorkerPackageClosure {
         'Microsoft.IdentityModel.Protocols/8.16.0'
         'Microsoft.IdentityModel.Tokens/8.16.0'
         'Microsoft.SqlServer.Server/1.0.0'
-        'Microsoft.SqlServer.TransactSql.ScriptDom/180.117.0'
+        'Microsoft.SqlServer.TransactSql.ScriptDom/180.140.0'
         'System.Configuration.ConfigurationManager/9.0.18'
         'System.Diagnostics.EventLog/9.0.18'
         'System.IdentityModel.Tokens.Jwt/8.16.0'
-        'System.Security.Cryptography.Pkcs/9.0.22'
+        'System.Security.Cryptography.Pkcs/10.0.14'
         'System.Security.Cryptography.ProtectedData/9.0.18'
         'System.Threading.RateLimiting/9.0.18'
     ) | Sort-Object

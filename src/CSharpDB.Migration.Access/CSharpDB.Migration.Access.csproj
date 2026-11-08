@@ -13,7 +13,7 @@
   <ItemGroup>
     <ProjectReference Include="..\CSharpDB.Migration\CSharpDB.Migration.csproj" />
     <ProjectReference Include="..\CSharpDB.Migration.Retained\CSharpDB.Migration.Retained.csproj" />
-    <PackageReference Include="System.Data.OleDb" Version="10.0.12" />
+    <PackageReference Include="System.Data.OleDb" Version="10.0.14" />
   </ItemGroup>
 
   <ItemGroup>

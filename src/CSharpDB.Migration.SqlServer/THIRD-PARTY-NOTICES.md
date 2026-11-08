@@ -26,11 +26,11 @@ Microsoft Software License Terms included at
 | Microsoft.IdentityModel.Protocols.OpenIdConnect | 8.16.0 | MIT |
 | Microsoft.IdentityModel.Tokens | 8.16.0 | MIT |
 | Microsoft.SqlServer.Server | 1.0.0 | MIT |
-| Microsoft.SqlServer.TransactSql.ScriptDom | 180.117.0 | MIT |
+| Microsoft.SqlServer.TransactSql.ScriptDom | 180.140.0 | MIT |
 | System.Configuration.ConfigurationManager | 9.0.18 | MIT |
 | System.Diagnostics.EventLog | 9.0.18 | MIT |
 | System.IdentityModel.Tokens.Jwt | 8.16.0 | MIT |
-| System.Security.Cryptography.Pkcs | 9.0.22 | MIT |
+| System.Security.Cryptography.Pkcs | 10.0.14 | MIT |
 | System.Security.Cryptography.ProtectedData | 9.0.18 | MIT |
 | System.Threading.RateLimiting | 9.0.18 | MIT |
 
@@ -64,7 +64,7 @@ SOFTWARE.
 ## Microsoft.SqlServer.TransactSql.ScriptDom
 
 - Package: Microsoft.SqlServer.TransactSql.ScriptDom
-- Version: 180.117.0
+- Version: 180.140.0
 - Project: https://github.com/microsoft/SqlScriptDOM
 - License: MIT
 

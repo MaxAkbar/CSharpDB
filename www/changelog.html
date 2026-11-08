@@ -75,23 +75,35 @@
                 <p>Short highlights from the published release notes. Dates use UTC publication dates; development work is listed separately below.</p>
                 <nav class="changelog-links" aria-label="Changelog sections">
                     <a href="#unreleased">Unreleased</a>
-                    <a href="#v4.6.6">Latest release</a>
+                    <a href="#v4.7.0">Latest release</a>
                     <a href="#release-history">Earlier releases</a>
                     <a href="https://github.com/MaxAkbar/CSharpDB/releases">All GitHub releases ↗</a>
                 </nav>
-                <article class="news-entry unreleased" id="unreleased" data-release-status="unreleased" data-release-version="4.7.0">
+                <article class="news-entry unreleased" id="unreleased" data-release-status="unreleased" data-release-version="4.7.1">
                     <div class="news-entry-header"><span class="news-badge news-badge-unreleased">Unreleased</span><span class="news-date">Development work · not in a published package</span></div>
-                    <h2>Shared gRPC sessions and native archive fixes</h2>
+                    <h2>Dependency compatibility updates</h2>
+                    <ul>
+                        <li><strong>EF Core:</strong> align the provider, samples, migration corpus, and local migration tool on 10.0.14.</li>
+                        <li><strong>API and clients:</strong> update Microsoft, OpenTelemetry, Scalar, and client tooling dependencies while retaining compatible OpenAPI and CSV parser versions.</li>
+                        <li><strong>Optional migration workers:</strong> update Access and SQL Server dependencies together with their reviewed bundle inventories and notices.</li>
+                    </ul>
+                    <p class="release-note">Database and WAL formats are unchanged. The custom TCP transport remains a separate prototype.</p>
+                </article>
+                <h2 id="published-releases">Published releases</h2>
+                <article class="news-entry" id="v4.7.0" data-release-status="published" data-release-version="4.7.0">
+                    <div class="news-entry-header"><span class="news-badge news-badge-release">Latest release</span><time class="news-date" datetime="2026-10-28">October 28, 2026</time></div>
+                    <h3>v4.7.0 — Shared gRPC sessions and native archive fixes</h3>
+                    <p>Published changes since v4.6.6.</p>
                     <ul>
                         <li><strong>Remote clients:</strong> share bounded SDK and ADO.NET connection pools, prevent queued transaction starts from blocking commit or rollback, preserve transaction and result ownership, and add explicit native gRPC selection with experimental persistent sessions.</li>
                         <li><strong>Native archives:</strong> fix archive-backed SQL with generated JSON metadata and add published NativeAOT checks for scans, lookups, declared types, and reopen persistence.</li>
                         <li><strong>Maintenance:</strong> support private migration reject reports on Linux tmpfs, update the optional SQL Server migration dependency, and include all 27 test modules in pull-request CI.</li>
                     </ul>
                     <p class="release-note">Unary calls remain the default. Streaming is experimental and opt-in. No verified network speedup is claimed; the custom TCP prototype is excluded.</p>
+                    <p><a href="https://github.com/MaxAkbar/CSharpDB/releases/tag/v4.7.0">Published release notes →</a></p>
                 </article>
-                <h2 id="published-releases">Published releases</h2>
                 <article class="news-entry" id="v4.6.6" data-release-status="published" data-release-version="4.6.6">
-                    <div class="news-entry-header"><span class="news-badge news-badge-release">Latest release</span><time class="news-date" datetime="2026-10-12">October 12, 2026</time></div>
+                    <div class="news-entry-header"><span class="news-badge news-badge-release">Release</span><time class="news-date" datetime="2026-10-12">October 12, 2026</time></div>
                     <h3>v4.6.6 — Prepared queries, bounded reads, and durable writes</h3>
                     <p>Published changes since v4.6.5.</p>
                     <ul>

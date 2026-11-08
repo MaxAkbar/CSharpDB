@@ -11,7 +11,7 @@
     <ProjectReference Include="..\..\src\CSharpDB.Api\CSharpDB.Api.csproj" Aliases="CSharpDbApi" />
     <ProjectReference Include="..\..\src\CSharpDB.Daemon\CSharpDB.Daemon.csproj" />
     <ProjectReference Include="..\..\src\CSharpDB.Data\CSharpDB.Data.csproj" />
-    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.12" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.14" />
     <Compile Include="..\Shared\GrpcSocketDaemonFixture.cs" Link="Shared\GrpcSocketDaemonFixture.cs" />
   </ItemGroup>
 </Project>
