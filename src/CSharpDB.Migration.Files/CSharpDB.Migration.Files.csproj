@@ -13,6 +13,7 @@
   <ItemGroup>
     <ProjectReference Include="..\CSharpDB.Primitives\CSharpDB.Primitives.csproj" />
     <ProjectReference Include="..\CSharpDB.Migration\CSharpDB.Migration.csproj" />
+    <!-- CsvHelper 34 replaces the parser API; retain 33.x until the bounded CSV reader is migrated. -->
     <PackageReference Include="CsvHelper" Version="33.1.0" />
   </ItemGroup>
 
