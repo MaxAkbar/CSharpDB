@@ -10,7 +10,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="BenchmarkDotNet" Version="0.15.8" />
+    <PackageReference Include="BenchmarkDotNet" Version="0.16.0-preview.2" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="$(CSharpDbQualifiedEfCoreVersion)" />
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="11.0.0" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="$(CSharpDbQualifiedEfCoreVersion)" />
