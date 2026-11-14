@@ -94,9 +94,13 @@ internal static class SqlParameterBinder
         decimal decimalValue;
         try
         {
-            decimalValue = value is decimal exact
-                ? exact
-                : Convert.ToDecimal(value, CultureInfo.InvariantCulture);
+            decimalValue = value switch
+            {
+                decimal exact => exact,
+                double real => CSharpDbDecimalCodec.FromDouble(real),
+                float real => CSharpDbDecimalCodec.FromSingle(real),
+                _ => Convert.ToDecimal(value, CultureInfo.InvariantCulture),
+            };
         }
         catch (Exception ex) when (ex is FormatException or InvalidCastException or OverflowException)
         {

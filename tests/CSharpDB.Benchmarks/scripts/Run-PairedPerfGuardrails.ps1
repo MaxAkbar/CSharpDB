@@ -8,6 +8,7 @@ param(
     [string]$Configuration = 'Release',
     [string]$ThresholdsPath = '',
     [string[]]$MicroArguments = @(),
+    [switch]$UseHarnessSdk,
     [switch]$NoFailOnRegression
 )
 Set-StrictMode -Version Latest
@@ -29,6 +30,13 @@ foreach ($role in @('base', 'head')) {
     if ($LASTEXITCODE -ne 0) { throw "Could not resolve $role product SHA." }
 }
 $harnessRoot = [IO.Path]::GetFullPath((Join-Path $scriptDir '..'))
+$commonSdkManifest = Join-Path $OutputPath 'common-global.json'
+if ($UseHarnessSdk) {
+    # A new harness TFM may require a newer SDK than the base product pins.
+    # Keep the product TFMs intact and build both with the harness SDK.
+    $harnessSdkManifest = [IO.Path]::GetFullPath((Join-Path $harnessRoot '../../global.json'))
+    Copy-Item -LiteralPath $harnessSdkManifest -Destination $commonSdkManifest
+}
 $records = @(Get-PerfHarnessRecords $harnessRoot)
 $identity = Get-PerfHarnessIdentity $records
 if ([string]::IsNullOrWhiteSpace($ThresholdsPath)) {
@@ -51,6 +59,13 @@ foreach ($role in @('base', 'head')) {
         Copy-Item -LiteralPath (Join-Path $harnessRoot $record.path) -Destination $destination
     }
     if ((Get-PerfHarnessIdentity @(Get-PerfHarnessRecords $target)) -cne $identity) { throw "$role harness synchronization failed." }
+    if ($UseHarnessSdk) {
+        $productSdkManifest = Join-Path $roots[$role] 'global.json'
+        if (Test-Path -LiteralPath $productSdkManifest) {
+            Copy-Item -LiteralPath $productSdkManifest -Destination (Join-Path $OutputPath "$role-original-global.json")
+        }
+        Copy-Item -LiteralPath $commonSdkManifest -Destination $productSdkManifest
+    }
     $buildInputs = @(& git -C $roots[$role] ls-files '*.props' '*.targets' 'global.json' '*NuGet.config' '*.csproj' '*packages.lock.json')
     if ($LASTEXITCODE -ne 0) { throw 'Could not enumerate product build inputs.' }
     @($buildInputs | ForEach-Object {
@@ -83,6 +98,7 @@ foreach ($definition in @(Get-PerfPairSchedule)) {
 }
 [ordered]@{
     schemaVersion = 1
+    sdkPolicy = $(if ($UseHarnessSdk) { 'common-harness-sdk' } else { 'product-sdk' })
     baseCommit = $commits.base
     headCommit = $commits.head
     harnessIdentity = $identity

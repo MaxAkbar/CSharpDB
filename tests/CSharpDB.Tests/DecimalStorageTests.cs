@@ -5,6 +5,30 @@ namespace CSharpDB.Tests;
 
 public sealed class DecimalStorageTests
 {
+    [Theory]
+    [InlineData(1.23, "1.23")]
+    [InlineData(42.42, "42.42")]
+    [InlineData(-0.1, "-0.1")]
+    [InlineData(1.2345678901234567, "1.23456789012346")]
+    [InlineData(1e-20, "0.00000000000000000001")]
+    public void RealToDecimal_UsesExplicitDecimalPrecision(double value, string expected)
+    {
+        decimal converted = CSharpDbDecimalCodec.FromDouble(value);
+        Assert.Equal(decimal.Parse(expected, System.Globalization.CultureInfo.InvariantCulture), converted);
+    }
+
+    [Theory]
+    [InlineData(double.NaN)]
+    [InlineData(double.PositiveInfinity)]
+    [InlineData(double.NegativeInfinity)]
+    [InlineData(double.MaxValue)]
+    public void RealToDecimal_RejectsNonFiniteOrOutOfRangeValues(double value)
+        => Assert.Throws<OverflowException>(() => CSharpDbDecimalCodec.FromDouble(value));
+
+    [Fact]
+    public void SingleToDecimal_UsesExplicitDecimalPrecision()
+        => Assert.Equal(1.23m, CSharpDbDecimalCodec.FromSingle(1.23f));
+
     [Fact]
     public void DbValue_NormalizesDecimalCoefficientAndScale()
     {

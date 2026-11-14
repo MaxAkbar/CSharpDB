@@ -10,7 +10,7 @@ requesting elevation, or changing PATH. The destination must be absent or
 empty unless -Force is supplied. -Force overwrites colliding files but does
 not delete unrelated destination files.
 
-The .NET 10 runtime must already be installed.
+The .NET 11 runtime must already be installed.
 
 .PARAMETER InstallDirectory
 Existing empty directory or one new leaf directory beneath an existing,
@@ -276,7 +276,7 @@ $dotnet = Get-Command `
     -CommandType Application `
     -ErrorAction SilentlyContinue
 if ($null -eq $dotnet) {
-    throw 'The framework-dependent migration CLI requires the .NET 10 runtime, but dotnet was not found.'
+    throw 'The framework-dependent migration CLI requires the .NET 11 runtime, but dotnet was not found.'
 }
 $installedRuntimes = @(
     & $dotnet.Source --list-runtimes 2>$null)
@@ -284,10 +284,10 @@ if ($LASTEXITCODE -ne 0 -or
     -not (
         $installedRuntimes |
             Where-Object {
-                $_ -match '^Microsoft\.NETCore\.App 10\.'
+                $_ -match '^Microsoft\.NETCore\.App 11\.'
             }))
 {
-    throw 'Install the Microsoft .NET 10 runtime before installing the migration CLI.'
+    throw 'Install the Microsoft .NET 11 runtime before installing the migration CLI.'
 }
 
 if (-not $PSCmdlet.ShouldProcess(

@@ -240,7 +240,7 @@ public sealed class ProcessCrashDurabilityTests
             benchmarksProjectDirectory,
             "bin",
             BuildConfiguration,
-            "net10.0",
+            "net11.0",
             "CSharpDB.Benchmarks.dll");
 
         return File.Exists(benchmarksAssemblyPath);

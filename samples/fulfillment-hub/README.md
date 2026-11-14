@@ -15,7 +15,7 @@ dotnet run --project samples/fulfillment-hub/FulfillmentHubSample.csproj
 Each run creates a fresh demo database here:
 
 ```text
-samples/fulfillment-hub/bin/Debug/net10.0/fulfillment-hub-demo.db
+samples/fulfillment-hub/bin/Debug/net11.0/fulfillment-hub-demo.db
 ```
 
 The seeder does more than load SQL. It also:
@@ -119,7 +119,7 @@ What to learn here:
 Check the generated export file too:
 
 ```text
-samples/fulfillment-hub/bin/Debug/net10.0/generated-output/low-stock-watch.csv
+samples/fulfillment-hub/bin/Debug/net11.0/generated-output/low-stock-watch.csv
 ```
 
 ### 4. Receive A Purchase Order
@@ -244,7 +244,7 @@ At some point, the operator needs guidance, not just data. That is why the sampl
 Search for the receiving issue through the engine API:
 
 ```csharp
-await using var db = await Database.OpenAsync("samples/fulfillment-hub/bin/Debug/net10.0/fulfillment-hub-demo.db");
+await using var db = await Database.OpenAsync("samples/fulfillment-hub/bin/Debug/net11.0/fulfillment-hub-demo.db");
 var hits = await db.SearchAsync("fts_ops_playbooks", "partial receipt");
 ```
 

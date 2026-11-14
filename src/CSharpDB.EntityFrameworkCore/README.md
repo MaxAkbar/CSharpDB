@@ -6,7 +6,7 @@ Use standard EF Core `DbContext`, migrations, and LINQ patterns against
 embedded file-backed or private in-memory CSharpDB databases.
 
 [![NuGet](https://img.shields.io/nuget/v/CSharpDB.EntityFrameworkCore)](https://www.nuget.org/packages/CSharpDB.EntityFrameworkCore)
-[![.NET 10](https://img.shields.io/badge/.NET-10-512bd4)](https://dotnet.microsoft.com/download/dotnet/10.0)
+[![.NET 11](https://img.shields.io/badge/.NET-11-512bd4)](https://dotnet.microsoft.com/download/dotnet/11.0)
 [![Release](https://img.shields.io/github/v/release/MaxAkbar/CSharpDB?display_name=tag&label=Release)](https://github.com/MaxAkbar/CSharpDB/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/MaxAkbar/CSharpDB/blob/main/LICENSE)
 
@@ -296,7 +296,7 @@ remote endpoint.
 
 For adoption review, the separate
 [`csharpdb-ef` tool](../CSharpDB.EntityFrameworkCore.Tools/README.md) analyzes a
-restored, single-target `net10.0` project's compiled migrations with the
+restored, single-target `net11.0` project's compiled migrations with the
 provider active:
 
 ```bash

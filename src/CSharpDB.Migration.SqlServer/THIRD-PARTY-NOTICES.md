@@ -13,12 +13,7 @@ Microsoft Software License Terms included at
 | Microsoft.Data.SqlClient.Extensions.Abstractions | 7.1.1 | MIT |
 | Microsoft.Data.SqlClient.Internal.Logging | 7.1.1 | MIT |
 | Microsoft.Data.SqlClient.SNI.runtime | 7.1.0 | Microsoft Software License Terms |
-| Microsoft.Extensions.Caching.Abstractions | 9.0.18 | MIT |
 | Microsoft.Extensions.Caching.Memory | 9.0.18 | MIT |
-| Microsoft.Extensions.DependencyInjection.Abstractions | 10.0.0 | MIT |
-| Microsoft.Extensions.Logging.Abstractions | 10.0.0 | MIT |
-| Microsoft.Extensions.Options | 9.0.18 | MIT |
-| Microsoft.Extensions.Primitives | 9.0.18 | MIT |
 | Microsoft.IdentityModel.Abstractions | 8.16.0 | MIT |
 | Microsoft.IdentityModel.JsonWebTokens | 8.16.0 | MIT |
 | Microsoft.IdentityModel.Logging | 8.16.0 | MIT |
@@ -30,7 +25,7 @@ Microsoft Software License Terms included at
 | System.Configuration.ConfigurationManager | 9.0.18 | MIT |
 | System.Diagnostics.EventLog | 9.0.18 | MIT |
 | System.IdentityModel.Tokens.Jwt | 8.16.0 | MIT |
-| System.Security.Cryptography.Pkcs | 10.0.14 | MIT |
+| System.Security.Cryptography.Pkcs | 11.0.0 | MIT |
 | System.Security.Cryptography.ProtectedData | 9.0.18 | MIT |
 | System.Threading.RateLimiting | 9.0.18 | MIT |
 

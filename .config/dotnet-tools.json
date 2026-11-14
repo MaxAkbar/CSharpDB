@@ -7,7 +7,7 @@
       "commands": [
         "dotnet-ef"
       ],
-      "rollForward": false
+      "rollForward": true
     }
   }
 }

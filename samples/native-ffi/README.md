@@ -4,7 +4,7 @@ These tutorials show how to use CSharpDB from non-.NET languages via the NativeA
 
 ## Prerequisites
 
-1. **Build the native library** (requires .NET 10 SDK + C++ toolchain):
+1. **Build the native library** (requires .NET 11 SDK + C++ toolchain):
 
    ```bash
    # Windows
@@ -19,7 +19,7 @@ These tutorials show how to use CSharpDB from non-.NET languages via the NativeA
 
 2. The published library will be at:
    ```
-   src/CSharpDB.Native/bin/Release/net10.0/<rid>/publish/CSharpDB.Native.{dll,so,dylib}
+   src/CSharpDB.Native/bin/Release/net11.0/<rid>/publish/CSharpDB.Native.{dll,so,dylib}
    ```
 
 ## Tutorials

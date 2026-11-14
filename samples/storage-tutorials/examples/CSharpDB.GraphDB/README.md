@@ -234,7 +234,7 @@ Returns the exact path (nodes + edges) and statistics about cursor operations.
 
 ### Prerequisites
 
-- .NET 10 SDK
+- .NET 11 SDK
 - CSharpDB.Storage project (referenced in the solution)
 
 ### CLI Mode (Interactive REPL)

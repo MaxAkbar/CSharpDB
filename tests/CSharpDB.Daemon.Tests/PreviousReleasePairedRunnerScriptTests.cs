@@ -582,7 +582,7 @@ public sealed class PreviousReleasePairedRunnerScriptTests
                     "CSharpDB.Benchmarks",
                     "bin",
                     "Release",
-                    "net10.0",
+                    "net11.0",
                     "CSharpDB.Benchmarks.dll")),
                 invokedArtifact);
 
@@ -794,7 +794,7 @@ public sealed class PreviousReleasePairedRunnerScriptTests
                 "CSharpDB.Benchmarks",
                 "bin",
                 "Release",
-                "net10.0",
+                "net11.0",
                 "CSharpDB.Benchmarks.dll"));
             string candidateArtifact = Path.GetFullPath(Path.Combine(
                 evidence,
@@ -803,7 +803,7 @@ public sealed class PreviousReleasePairedRunnerScriptTests
                 "CSharpDB.Benchmarks",
                 "bin",
                 "Release",
-                "net10.0",
+                "net11.0",
                 "CSharpDB.Benchmarks.dll"));
             string previousArtifactHash = GetFakeArtifactHash("baseline-source");
             string candidateArtifactHash = GetFakeArtifactHash("candidate-source");
@@ -1519,7 +1519,7 @@ public sealed class PreviousReleasePairedRunnerScriptTests
                 "CSharpDB.Benchmarks",
                 "bin",
                 "Release",
-                "net10.0",
+                "net11.0",
                 "CSharpDB.Fake.Dependency.dll"));
             Dictionary<string, string> environment = new()
             {
@@ -1995,7 +1995,7 @@ public sealed class PreviousReleasePairedRunnerScriptTests
             if ($command -eq 'build') {
                 $artifactRoot = Join-Path `
                     (Get-Location).Path `
-                    'tests/CSharpDB.Benchmarks/bin/Release/net10.0'
+                    'tests/CSharpDB.Benchmarks/bin/Release/net11.0'
                 New-Item -ItemType Directory -Path $artifactRoot -Force | Out-Null
                 [IO.File]::WriteAllText(
                     (Join-Path $artifactRoot 'CSharpDB.Benchmarks.dll'),
@@ -2192,7 +2192,7 @@ public sealed class PreviousReleasePairedRunnerScriptTests
             else {
                 Join-Path `
                     (Get-Location).Path `
-                    'tests/CSharpDB.Benchmarks/bin/Release/net10.0/results'
+                    'tests/CSharpDB.Benchmarks/bin/Release/net11.0/results'
             }
             New-Item -ItemType Directory -Path $resultRoot -Force | Out-Null
             $resultPath = Join-Path `

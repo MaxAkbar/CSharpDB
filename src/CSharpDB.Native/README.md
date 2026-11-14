@@ -46,7 +46,7 @@ A NativeAOT-compiled shared library that exposes the CSharpDB embedded database 
 
 ### All Platforms
 
-- [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) or later
+- [.NET 11 SDK](https://dotnet.microsoft.com/download/dotnet/11.0) or later
 
 ### Windows
 
@@ -88,7 +88,7 @@ xcode-select --install
 dotnet publish src/CSharpDB.Native -c Release -r win-x64
 ```
 
-Output: `src/CSharpDB.Native/bin/Release/net10.0/win-x64/publish/CSharpDB.Native.dll`
+Output: `src/CSharpDB.Native/bin/Release/net11.0/win-x64/publish/CSharpDB.Native.dll`
 
 For ARM64 Windows:
 
@@ -102,7 +102,7 @@ dotnet publish src/CSharpDB.Native -c Release -r win-arm64
 dotnet publish src/CSharpDB.Native -c Release -r linux-x64
 ```
 
-Output: `src/CSharpDB.Native/bin/Release/net10.0/linux-x64/publish/CSharpDB.Native.so`
+Output: `src/CSharpDB.Native/bin/Release/net11.0/linux-x64/publish/CSharpDB.Native.so`
 
 For ARM64 (e.g., Raspberry Pi, AWS Graviton):
 
@@ -120,7 +120,7 @@ dotnet publish src/CSharpDB.Native -c Release -r osx-arm64
 dotnet publish src/CSharpDB.Native -c Release -r osx-x64
 ```
 
-Output: `src/CSharpDB.Native/bin/Release/net10.0/osx-arm64/publish/CSharpDB.Native.dylib`
+Output: `src/CSharpDB.Native/bin/Release/net11.0/osx-arm64/publish/CSharpDB.Native.dylib`
 
 ### Android
 

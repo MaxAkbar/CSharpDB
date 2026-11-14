@@ -357,7 +357,7 @@ try {
         $plan | ConvertTo-Json -Depth 8 | Set-Content $path
         Assert-Fails { & (Join-Path $scriptDir 'Compare-PairedPerfGuardrails.ps1') -OutputPath $root -NoFailOnRegression } 'Both balanced execution orders'
     }
-    Test-Case 'Real paired driver synchronizes harness, captures ABBA, and rejects zero execution' {
+    Test-Case 'Real paired driver records common SDK inputs, captures ABBA, and rejects zero execution' {
         $root = Join-Path $testRoot 'driver'
         foreach ($role in @('base', 'head')) {
             $repo = Join-Path $root $role
@@ -365,6 +365,7 @@ try {
             New-Item -ItemType Directory -Path $bench -Force | Out-Null
             '// obsolete synthetic harness' | Set-Content (Join-Path $bench 'Program.cs')
             '<Project />' | Set-Content (Join-Path $bench 'CSharpDB.Benchmarks.csproj')
+            '{"sdk":{"version":"10.0.401"}}' | Set-Content (Join-Path $repo 'global.json')
             @('**/bin/', '**/obj/', '**/results/', '**/BenchmarkDotNet.Artifacts/') | Set-Content (Join-Path $repo '.gitignore')
             & git -C $repo init --quiet
             & git -C $repo add .
@@ -395,13 +396,18 @@ try {
                 @('Method,Mean,Allocated', 'A,100 ns,100 B') | Set-Content (Join-Path $artifacts $csvName)
                 return "Global total time: 00:00:01, executed benchmarks: $(if ($global:PerfFixtureZero) { 0 } else { 1 })"
             }
-            $artifacts = Join-Path $bench 'bin/Release/net10.0/results'
+            $artifacts = Join-Path $bench 'bin/Release/net11.0/results'
             New-Item -ItemType Directory -Path $artifacts -Force | Out-Null
             @('Method,Mean,Allocated', 'A,100 ns,100 B') | Set-Content (Join-Path $artifacts ('suite-' + [Guid]::NewGuid().ToString('N') + '.csv'))
             return 'Synthetic suite executed'
         }
         try {
-            & (Join-Path $scriptDir 'Run-PairedPerfGuardrails.ps1') -BaseRoot (Join-Path $root 'base') -HeadRoot (Join-Path $root 'head') -OutputPath (Join-Path $root 'evidence') -ThresholdsPath (Join-Path $root 'policy.json') -NoFailOnRegression
+            & (Join-Path $scriptDir 'Run-PairedPerfGuardrails.ps1') -BaseRoot (Join-Path $root 'base') -HeadRoot (Join-Path $root 'head') -OutputPath (Join-Path $root 'evidence') -ThresholdsPath (Join-Path $root 'policy.json') -UseHarnessSdk -NoFailOnRegression
+            $commonSdk = Get-Content (Join-Path $root 'evidence/common-global.json') -Raw
+            foreach ($role in @('base', 'head')) {
+                if ((Get-Content (Join-Path $root "$role/global.json") -Raw) -cne $commonSdk) { throw 'Product build did not use the recorded common SDK manifest.' }
+                if ((Get-Content (Join-Path $root "evidence/$role-original-global.json") -Raw) -notmatch '10.0.401') { throw 'Original SDK provenance was lost.' }
+            }
             $roles = @($global:PerfFixtureInvocations | ForEach-Object { if ($_ -like '*driver\base\*' -or $_ -like '*driver/base/*') { 'base' } else { 'head' } })
             if (($roles -join ',') -ne 'base,base,head,head,head,head,base,base') { throw "Incorrect real driver execution order: $($roles -join ',')" }
             if (($global:PerfFixtureBuildDirectories -join ',') -cne (@((Join-Path $root 'base'), (Join-Path $root 'head')) -join ',')) { throw 'Product builds did not select SDKs from their own directories.' }
@@ -409,6 +415,7 @@ try {
             if (($global:PerfFixtureRuntimeDirectories -join ',') -cne ($captureDirectories -join ',')) { throw 'Runtime probes did not use each product SDK context.' }
             if (($global:PerfFixtureSdkDirectories -join ',') -cne ($captureDirectories -join ',')) { throw 'Fingerprint SDK capture did not use each product SDK context.' }
             $plan = Get-Content (Join-Path $root 'evidence/paired.json') -Raw | ConvertFrom-Json
+            if ($plan.sdkPolicy -cne 'common-harness-sdk') { throw 'Common SDK policy was not recorded.' }
             if ($plan.pairs.Count -ne 2) { throw 'Driver did not persist both orders.' }
             $global:PerfFixtureZero = $true
             $runner = Join-Path $root 'base/tests/CSharpDB.Benchmarks/scripts/Run-Perf-Guardrails.ps1'

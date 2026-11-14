@@ -22,11 +22,11 @@ Access adapter.
 ## Runtime requirement
 
 This is a framework-dependent release, not a self-contained application.
-Install the Microsoft .NET 10 runtime for this archive's operating system and
+Install the Microsoft .NET 11 runtime for this archive's operating system and
 architecture before running the CLI:
 
 ```text
-Microsoft.NETCore.App 10.x
+Microsoft.NETCore.App 11.x
 ```
 
 Packaging a runtime-specific app host does not establish runtime,

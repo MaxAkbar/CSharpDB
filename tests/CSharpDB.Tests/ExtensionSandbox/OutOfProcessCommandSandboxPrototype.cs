@@ -83,7 +83,7 @@ internal sealed class OutOfProcessCommandSandboxPrototype
             "CSharpDB.ExtensionSandbox.Worker",
             "bin",
             GetConfiguration(),
-            "net10.0",
+            "net11.0",
             "CSharpDB.ExtensionSandbox.Worker.dll");
 
     private static string GetWorkerProjectPath()

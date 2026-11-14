@@ -11,7 +11,7 @@ Run it after publishing both projects for the current machine, for example:
 ```powershell
 dotnet publish src/CSharpDB.Native/CSharpDB.Native.csproj -c Release -r win-x64 -p:ILLinkTreatWarningsAsErrors=true -p:IlcTreatWarningsAsErrors=true
 dotnet publish tests/CSharpDB.Native.ArchiveSmoke/CSharpDB.Native.ArchiveSmoke.csproj -c Release -r win-x64 --self-contained true -p:PublishAot=true -o artifacts/native-archive-smoke/win-x64
-./artifacts/native-archive-smoke/win-x64/CSharpDB.Native.ArchiveSmoke.exe (Resolve-Path src/CSharpDB.Native/bin/Release/net10.0/win-x64/publish/CSharpDB.Native.dll)
+./artifacts/native-archive-smoke/win-x64/CSharpDB.Native.ArchiveSmoke.exe (Resolve-Path src/CSharpDB.Native/bin/Release/net11.0/win-x64/publish/CSharpDB.Native.dll)
 ```
 
 CI runs the corresponding `linux-x64`, `win-x64` and `osx-arm64` builds. The

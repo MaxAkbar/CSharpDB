@@ -275,7 +275,7 @@ jobs:
         run: |
           $executableName = if ($IsWindows) { 'CSharpDB.Native.ArchiveSmoke.exe' } else { 'CSharpDB.Native.ArchiveSmoke' }
           $executable = Join-Path 'artifacts/native-archive-smoke/${{ matrix.rid }}' $executableName
-          $library = [IO.Path]::GetFullPath('src/CSharpDB.Native/bin/Release/net10.0/${{ matrix.rid }}/publish/${{ matrix.lib }}')
+          $library = [IO.Path]::GetFullPath('src/CSharpDB.Native/bin/Release/net11.0/${{ matrix.rid }}/publish/${{ matrix.lib }}')
           if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) { throw "Archive smoke executable missing: $executable" }
           if (-not (Test-Path -LiteralPath $library -PathType Leaf)) { throw "Native library missing: $library" }
           & $executable $library
@@ -304,11 +304,11 @@ jobs:
 
       - name: Verify exported symbols (Linux)
         if: runner.os == 'Linux'
-        run: nm -D src/CSharpDB.Native/bin/Release/net10.0/${{ matrix.rid }}/publish/${{ matrix.lib }} | grep -c csharpdb_
+        run: nm -D src/CSharpDB.Native/bin/Release/net11.0/${{ matrix.rid }}/publish/${{ matrix.lib }} | grep -c csharpdb_
 
       - name: Verify exported symbols (macOS)
         if: runner.os == 'macOS'
-        run: nm -gU src/CSharpDB.Native/bin/Release/net10.0/${{ matrix.rid }}/publish/${{ matrix.lib }} | grep -c csharpdb_
+        run: nm -gU src/CSharpDB.Native/bin/Release/net11.0/${{ matrix.rid }}/publish/${{ matrix.lib }} | grep -c csharpdb_
 
       - name: Verify exported symbols (Windows)
         if: runner.os == 'Windows'
@@ -325,14 +325,14 @@ jobs:
             throw "Could not locate dumpbin.exe from the installed Visual Studio toolchain."
           }
 
-          & $dumpbin /exports src\CSharpDB.Native\bin\Release\net10.0\${{ matrix.rid }}\publish\${{ matrix.lib }} |
+          & $dumpbin /exports src\CSharpDB.Native\bin\Release\net11.0\${{ matrix.rid }}\publish\${{ matrix.lib }} |
             Select-String "csharpdb_"
 
       - name: Upload native library
         uses: actions/upload-artifact@v7
         with:
           name: native-${{ matrix.rid }}
-          path: src/CSharpDB.Native/bin/Release/net10.0/${{ matrix.rid }}/publish/${{ matrix.lib }}
+          path: src/CSharpDB.Native/bin/Release/net11.0/${{ matrix.rid }}/publish/${{ matrix.lib }}
           if-no-files-found: error
 
       - name: Upload C header (once)

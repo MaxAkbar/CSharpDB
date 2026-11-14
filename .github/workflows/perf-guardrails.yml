@@ -102,6 +102,7 @@ jobs:
             -BaseRoot .tmp/perf-guardrails/base `
             -HeadRoot .tmp/perf-guardrails/head `
             -OutputPath .tmp/perf-guardrails/evidence `
+            -UseHarnessSdk `
             -Configuration Release -Mode $mode -NoFailOnRegression:$reportOnly `
             -MicroArguments @('--warmupCount', '2', '--iterationCount', '3', '--iterationTime', '100', '--buildTimeout', '600')
 

@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net11.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>CSharpDB.Migration.SqlServer</AssemblyName>
@@ -17,7 +17,7 @@
     <ProjectReference Include="..\CSharpDB.Migration.Retained\CSharpDB.Migration.Retained.csproj" />
     <PackageReference Include="Microsoft.Data.SqlClient" Version="7.1.1" />
     <!-- Keep SqlClient's transitive PKCS dependency on a patched release. -->
-    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.14" />
+    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="11.0.0" />
     <PackageReference Include="Microsoft.SqlServer.TransactSql.ScriptDom" Version="180.140.0" />
   </ItemGroup>
 

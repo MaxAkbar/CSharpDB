@@ -12,7 +12,7 @@ base CLI bytes before it merges their fixed adapter directories, adds
 installation assets, creates one archive per runtime, and writes
 SHA256SUMS.txt.
 
-These archives require the .NET 10 runtime. Creating an archive does not
+These archives require the .NET 11 runtime. Creating an archive does not
 qualify a runtime, live database version, authentication mode, or deployment
 environment.
 
@@ -379,7 +379,7 @@ function Copy-DirectoryContents {
     }
 }
 
-function Assert-DotNetTenRuntimeConfig {
+function Assert-DotNetElevenRuntimeConfig {
     param(
         [Parameter(Mandatory = $true)]
         [string] $Path
@@ -406,10 +406,10 @@ function Assert-DotNetTenRuntimeConfig {
         $frameworks |
             Where-Object {
                 $_['name'] -eq 'Microsoft.NETCore.App' -and
-                $_['version'] -match '^10\.'
+                $_['version'] -match '^11\.'
             })
     if ($dotNetRuntime.Count -ne 1) {
-        throw "The release is not bound to the required .NET 10 runtime: $Path"
+        throw "The release is not bound to the required .NET 11 runtime: $Path"
     }
 }
 
@@ -422,14 +422,14 @@ function Assert-FrameworkDependentStage {
         [bool] $TargetIsWindows
     )
 
-    Assert-DotNetTenRuntimeConfig `
+    Assert-DotNetElevenRuntimeConfig `
         -Path (Join-Path $StageRoot 'csharpdb.runtimeconfig.json')
-    Assert-DotNetTenRuntimeConfig `
+    Assert-DotNetElevenRuntimeConfig `
         -Path (Join-Path $StageRoot 'adapters/sqlserver/csharpdb-migration-sqlserver-worker.runtimeconfig.json')
-    Assert-DotNetTenRuntimeConfig `
+    Assert-DotNetElevenRuntimeConfig `
         -Path (Join-Path $StageRoot 'adapters/mysql/csharpdb-migration-mysql-worker.runtimeconfig.json')
     if ($TargetIsWindows) {
-        Assert-DotNetTenRuntimeConfig `
+        Assert-DotNetElevenRuntimeConfig `
             -Path (Join-Path $StageRoot 'adapters/access/csharpdb-migration-access-worker.runtimeconfig.json')
     }
     else {
@@ -1042,7 +1042,7 @@ $checksumsPath = Join-Path `
 
 Write-Host 'CSharpDB migration release archives complete.'
 Write-Host "  Version: $releaseVersion"
-Write-Host '  Deployment: framework-dependent (.NET 10 runtime required)'
+Write-Host '  Deployment: framework-dependent (.NET 11 runtime required)'
 Write-Host "  Archive root: $archiveRoot"
 foreach ($archive in $createdArchives) {
     Write-Host "  Created: $archive"

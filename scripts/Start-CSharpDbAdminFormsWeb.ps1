@@ -44,7 +44,7 @@ Starts the forms runtime host using the default data source from
 
 .EXAMPLE
 .\scripts\Start-CSharpDbAdminFormsWeb.ps1 `
-  -DataSource C:\Users\maxim\source\Code\CSharpDB\samples\fulfillment-hub\bin\Debug\net10.0\fulfillment-hub-demo.db `
+  -DataSource C:\Users\maxim\source\Code\CSharpDB\samples\fulfillment-hub\bin\Debug\net11.0\fulfillment-hub-demo.db `
   -OpenBrowser
 
 Starts the forms runtime host against the Fulfillment Hub sample database and

@@ -122,7 +122,7 @@ public sealed class MigrationReleasePackagingTests
             StringComparison.Ordinal);
 
         Assert.Contains(
-            "Assert-DotNetTenRuntimeConfig",
+            "Assert-DotNetElevenRuntimeConfig",
             releaseScript,
             StringComparison.Ordinal);
         Assert.Contains(
@@ -130,7 +130,7 @@ public sealed class MigrationReleasePackagingTests
             releaseScript,
             StringComparison.Ordinal);
         Assert.Contains(
-            "framework-dependent (.NET 10 runtime required)",
+            "framework-dependent (.NET 11 runtime required)",
             releaseScript,
             StringComparison.Ordinal);
         Assert.DoesNotContain(
@@ -547,7 +547,7 @@ public sealed class MigrationReleasePackagingTests
         foreach (string installer in new[] { windows, posix })
         {
             Assert.Contains(
-                ".NET 10 runtime",
+                ".NET 11 runtime",
                 installer,
                 StringComparison.Ordinal);
             Assert.Contains(

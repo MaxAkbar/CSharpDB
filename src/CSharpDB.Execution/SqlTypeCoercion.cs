@@ -367,7 +367,7 @@ internal static class SqlTypeCoercion
         {
             DbType.Decimal => value.AsDecimal,
             DbType.Integer => value.AsInteger,
-            DbType.Real when double.IsFinite(value.AsReal) => checked((decimal)value.AsReal),
+            DbType.Real when double.IsFinite(value.AsReal) => CSharpDbDecimalCodec.FromDouble(value.AsReal),
             DbType.Text when explicitCast =>
                 decimal.Parse(value.AsText, NumberStyles.Number, CultureInfo.InvariantCulture),
             _ => throw new InvalidOperationException("A finite numeric value is required."),
@@ -647,7 +647,7 @@ internal static class SqlTypeCoercion
         else if (value.Type == DbType.Decimal)
             text = FormatSecondsInterval(value.AsDecimal);
         else if (value.Type == DbType.Real && explicitCast && double.IsFinite(value.AsReal))
-            text = FormatSecondsInterval(checked((decimal)value.AsReal));
+            text = FormatSecondsInterval(CSharpDbDecimalCodec.FromDouble(value.AsReal));
         else
             throw new InvalidOperationException("INTERVAL DAY TO SECOND requires interval text or a numeric second count.");
 

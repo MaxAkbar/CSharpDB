@@ -85,7 +85,7 @@ function Invoke-BenchmarkRun
     if ($Arguments -contains '--micro') { $count = Get-PerfExecutedMicroCases $logPath }
     else {
         $count = 0
-        $resultsDir = Join-Path $benchDir "bin/$Configuration/net10.0/results"
+        $resultsDir = Join-Path $benchDir "bin/$Configuration/net11.0/results"
         foreach ($csv in @(Get-ChildItem -LiteralPath $resultsDir -Filter '*.csv' -File | Where-Object LastWriteTimeUtc -ge $runStart)) {
             $count += @(Import-Csv -LiteralPath $csv.FullName).Count
         }
@@ -197,7 +197,7 @@ if (-not $SkipWriteDiagnostics)
     $writeDiagnosticsStartUtc = (Get-Date).ToUniversalTime()
     Invoke-BenchmarkRun -Label "Write Diagnostics" -Arguments $writeDiagnosticsArgs
     $writeDiagnosticsCapturePath = Copy-LatestArtifactToSnapshot `
-        -SourceDir (Join-Path $benchDir ("bin/{0}/net10.0/results" -f $Configuration)) `
+        -SourceDir (Join-Path $benchDir ("bin/{0}/net11.0/results" -f $Configuration)) `
         -Pattern ("write-diagnostics-*-median-of-{0}.csv" -f $DurabilityRepeatCount) `
         -NotBeforeUtc $writeDiagnosticsStartUtc `
         -TargetSubDir "macro-stress-scaling" `
@@ -220,7 +220,7 @@ if (-not $SkipDurableSqlBatching)
     $durableSqlBatchingStartUtc = (Get-Date).ToUniversalTime()
     Invoke-BenchmarkRun -Label "Durable SQL Batching" -Arguments $durableSqlBatchingArgs
     $durableSqlBatchingCapturePath = Copy-LatestArtifactToSnapshot `
-        -SourceDir (Join-Path $benchDir ("bin/{0}/net10.0/results" -f $Configuration)) `
+        -SourceDir (Join-Path $benchDir ("bin/{0}/net11.0/results" -f $Configuration)) `
         -Pattern ("durable-sql-batching-*-median-of-{0}.csv" -f $DurabilityRepeatCount) `
         -NotBeforeUtc $durableSqlBatchingStartUtc `
         -TargetSubDir "macro-stress-scaling" `
@@ -243,7 +243,7 @@ if (-not $SkipWriteTransactionDiagnostics)
     $writeTransactionDiagnosticsStartUtc = (Get-Date).ToUniversalTime()
     Invoke-BenchmarkRun -Label "WriteTransaction Diagnostics" -Arguments $writeTransactionDiagnosticsArgs
     $writeTransactionDiagnosticsCapturePath = Copy-LatestArtifactToSnapshot `
-        -SourceDir (Join-Path $benchDir ("bin/{0}/net10.0/results" -f $Configuration)) `
+        -SourceDir (Join-Path $benchDir ("bin/{0}/net11.0/results" -f $Configuration)) `
         -Pattern ("write-transaction-diagnostics-*-median-of-{0}.csv" -f $DurabilityRepeatCount) `
         -NotBeforeUtc $writeTransactionDiagnosticsStartUtc `
         -TargetSubDir "macro-stress-scaling" `
@@ -266,7 +266,7 @@ if (-not $SkipConcurrentWriteDiagnostics)
     $concurrentWriteDiagnosticsStartUtc = (Get-Date).ToUniversalTime()
     Invoke-BenchmarkRun -Label "Concurrent Write Diagnostics" -Arguments $concurrentWriteDiagnosticsArgs
     $concurrentWriteDiagnosticsCapturePath = Copy-LatestArtifactToSnapshot `
-        -SourceDir (Join-Path $benchDir ("bin/{0}/net10.0/results" -f $Configuration)) `
+        -SourceDir (Join-Path $benchDir ("bin/{0}/net11.0/results" -f $Configuration)) `
         -Pattern ("concurrent-write-diagnostics-*-median-of-{0}.csv" -f $DurabilityRepeatCount) `
         -NotBeforeUtc $concurrentWriteDiagnosticsStartUtc `
         -TargetSubDir "macro-stress-scaling" `
@@ -301,7 +301,7 @@ function Copy-NewArtifacts
 }
 
 $bdnRoot = Join-Path $repoRoot "BenchmarkDotNet.Artifacts"
-$benchResults = Join-Path $benchDir ("bin/{0}/net10.0/results" -f $Configuration)
+$benchResults = Join-Path $benchDir ("bin/{0}/net11.0/results" -f $Configuration)
 
 $copiedMicroCsv = 0
 $copiedMicroLogs = 0

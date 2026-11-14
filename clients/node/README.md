@@ -4,7 +4,7 @@ TypeScript/JavaScript client for [CSharpDB](https://github.com/MaxAkbar/CSharpDB
 
 ## Prerequisites
 
-1. **Publish the native library** (requires .NET 10 SDK + C++ toolchain):
+1. **Publish the native library** (requires .NET 11 SDK + C++ toolchain):
 
    ```bash
    # Windows

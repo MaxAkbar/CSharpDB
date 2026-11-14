@@ -9,7 +9,7 @@ Usage:
     --install-dir <directory> [--source-dir <archive-root>] [--force]
 
 Copies an extracted, framework-dependent CSharpDB migration CLI release to a
-caller-selected directory. The Microsoft .NET 10 runtime must already be
+caller-selected directory. The Microsoft .NET 11 runtime must already be
 installed. The script does not require root, create a service, or change PATH.
 
 The destination must be absent or empty. --force permits colliding files in a
@@ -148,10 +148,10 @@ if [ -e "$INSTALL_DIR" ] || [ -L "$INSTALL_DIR" ]; then
 fi
 
 command -v dotnet >/dev/null 2>&1 ||
-    fail 'The framework-dependent migration CLI requires the Microsoft .NET 10 runtime.'
+    fail 'The framework-dependent migration CLI requires the Microsoft .NET 11 runtime.'
 dotnet --list-runtimes |
-    grep -Eq '^Microsoft\.NETCore\.App 10\.' ||
-    fail 'Install the Microsoft .NET 10 runtime before installing the migration CLI.'
+    grep -Eq '^Microsoft\.NETCore\.App 11\.' ||
+    fail 'Install the Microsoft .NET 11 runtime before installing the migration CLI.'
 
 mkdir -p -- "$INSTALL_DIR"
 # The source and destination trees are link-free, so cp cannot redirect a

@@ -16,7 +16,7 @@ Thanks for your interest in contributing.
 
 ## Development Setup
 
-Prerequisite: [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
+Prerequisite: [.NET 11 SDK](https://dotnet.microsoft.com/download/dotnet/11.0)
 
 ```bash
 dotnet --version
@@ -48,7 +48,7 @@ The `CSharpDB.Native` project produces a standalone C-compatible shared library 
 
 ### Prerequisites
 
-In addition to the .NET 10 SDK, you need a native linker:
+In addition to the .NET 11 SDK, you need a native linker:
 
 | Platform | Requirement |
 |----------|-------------|
@@ -69,7 +69,7 @@ dotnet publish src/CSharpDB.Native -c Release -r linux-x64
 dotnet publish src/CSharpDB.Native -c Release -r osx-arm64
 ```
 
-Output goes to `src/CSharpDB.Native/bin/Release/net10.0/<rid>/publish/`:
+Output goes to `src/CSharpDB.Native/bin/Release/net11.0/<rid>/publish/`:
 - Windows: `CSharpDB.Native.dll`
 - Linux: `CSharpDB.Native.so`
 - macOS: `CSharpDB.Native.dylib`
@@ -90,13 +90,13 @@ After publishing, verify the library exports the expected C symbols:
 
 ```bash
 # Linux
-nm -D src/CSharpDB.Native/bin/Release/net10.0/linux-x64/publish/CSharpDB.Native.so | grep csharpdb_
+nm -D src/CSharpDB.Native/bin/Release/net11.0/linux-x64/publish/CSharpDB.Native.so | grep csharpdb_
 
 # macOS
-nm -gU src/CSharpDB.Native/bin/Release/net10.0/osx-arm64/publish/CSharpDB.Native.dylib | grep csharpdb_
+nm -gU src/CSharpDB.Native/bin/Release/net11.0/osx-arm64/publish/CSharpDB.Native.dylib | grep csharpdb_
 
 # Windows (Developer Command Prompt or PowerShell)
-dumpbin /exports src\CSharpDB.Native\bin\Release\net10.0\win-x64\publish\CSharpDB.Native.dll | Select-String "csharpdb_"
+dumpbin /exports src\CSharpDB.Native\bin\Release\net11.0\win-x64\publish\CSharpDB.Native.dll | Select-String "csharpdb_"
 ```
 
 You should see 20 exported functions prefixed with `csharpdb_`.

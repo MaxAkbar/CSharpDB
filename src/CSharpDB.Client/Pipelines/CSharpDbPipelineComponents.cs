@@ -377,6 +377,8 @@ internal sealed class CSharpDbTablePipelineDestination : IPipelineDestination
             DbType.Decimal => value switch
             {
                 decimal decimalValue => decimalValue,
+                double real => CSharpDB.Primitives.CSharpDbDecimalCodec.FromDouble(real),
+                float real => CSharpDB.Primitives.CSharpDbDecimalCodec.FromSingle(real),
                 _ => Convert.ToDecimal(value, CultureInfo.InvariantCulture),
             },
             DbType.Text => value switch

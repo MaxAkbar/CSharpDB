@@ -447,7 +447,7 @@ explicitly supplied. The script never removes `OutputRoot` itself and rejects
 links or reparse points in the output path, its existing ancestors, and
 directories it would replace.
 
-These releases are framework-dependent and require the Microsoft .NET 10
+These releases are framework-dependent and require the Microsoft .NET 11
 runtime. A RID-specific archive is not a claim of runtime, authentication,
 TLS, or live Access/SQL Server/MySQL qualification. Each extracted archive
 includes `README.md`, `LICENSE`, and installers under `install/windows` and
@@ -748,7 +748,7 @@ Start the forms-only runtime host against the Fulfillment Hub sample database:
 
 ```powershell
 & .\scripts\Start-CSharpDbAdminFormsWeb.ps1 `
-  -DataSource samples\fulfillment-hub\bin\Debug\net10.0\fulfillment-hub-demo.db `
+  -DataSource samples\fulfillment-hub\bin\Debug\net11.0\fulfillment-hub-demo.db `
   -OpenBrowser
 ```
 

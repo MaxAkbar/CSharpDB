@@ -1292,7 +1292,7 @@ public sealed class SqlServerWorkerClientTests
                 "CSharpDB.Migration.SqlServer.WorkerHarness",
                 "bin",
                 BuildConfiguration,
-                "net10.0");
+                "net11.0");
             string appHost = Path.Combine(
                 candidate,
                 OperatingSystem.IsWindows()

@@ -7,16 +7,16 @@ prerequisite and is not redistributed.
 
 | Package | Version | License |
 | --- | --- | --- |
-| System.Configuration.ConfigurationManager | 10.0.14 | MIT |
-| System.Data.OleDb | 10.0.14 | MIT |
-| System.Diagnostics.EventLog | 10.0.14 | MIT |
-| System.Diagnostics.PerformanceCounter | 10.0.14 | MIT |
-| System.Security.Cryptography.ProtectedData | 10.0.14 | MIT |
+| System.Configuration.ConfigurationManager | 11.0.0 | MIT |
+| System.Data.OleDb | 11.0.0 | MIT |
+| System.Diagnostics.EventLog | 11.0.0 | MIT |
+| System.Diagnostics.PerformanceCounter | 11.0.0 | MIT |
+| System.Security.Cryptography.ProtectedData | 11.0.0 | MIT |
 
 ## System.Data.OleDb
 
 - Package: System.Data.OleDb
-- Version: 10.0.14
+- Version: 11.0.0
 - Project: https://github.com/dotnet/runtime
 - License: MIT
 

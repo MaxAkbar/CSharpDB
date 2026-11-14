@@ -3,7 +3,7 @@
 Repeatable test-data generation and relationship-aware schema planning for the
 [CSharpDB](https://github.com/MaxAkbar/CSharpDB) embedded database engine.
 
-[![.NET 10](https://img.shields.io/badge/.NET-10-512bd4)](https://dotnet.microsoft.com/download/dotnet/10.0)
+[![.NET 11](https://img.shields.io/badge/.NET-11-512bd4)](https://dotnet.microsoft.com/download/dotnet/11.0)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/MaxAkbar/CSharpDB/blob/main/LICENSE)
 
 ## Overview

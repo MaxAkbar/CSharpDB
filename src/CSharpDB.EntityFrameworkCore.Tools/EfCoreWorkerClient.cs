@@ -245,7 +245,7 @@ internal static class EfCoreWorkerClient
                     "-c",
                     "Debug",
                     "--framework",
-                    "net10.0",
+                    "net11.0",
                     "--no-restore",
                     "--nologo",
                     "--verbosity",
@@ -662,7 +662,7 @@ internal static class EfCoreWorkerClient
         {
             return string.Equals(
                 properties.TargetFramework,
-                "net10.0",
+                "net11.0",
                 StringComparison.Ordinal);
         }
 
@@ -673,11 +673,11 @@ internal static class EfCoreWorkerClient
         return frameworks.Length == 1 &&
             string.Equals(
                 frameworks[0],
-                "net10.0",
+                "net11.0",
                 StringComparison.Ordinal) &&
             string.Equals(
                 properties.TargetFramework,
-                "net10.0",
+                "net11.0",
                 StringComparison.Ordinal);
     }
 

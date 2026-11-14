@@ -12,7 +12,7 @@ Run:
 
 ```powershell
 dotnet publish .\tests\CSharpDB.GeneratedCollections.TrimSmoke\CSharpDB.GeneratedCollections.TrimSmoke.csproj -c Release -r win-x64 --self-contained true
-.\tests\CSharpDB.GeneratedCollections.TrimSmoke\bin\Release\net10.0\win-x64\publish\CSharpDB.GeneratedCollections.TrimSmoke.exe
+.\tests\CSharpDB.GeneratedCollections.TrimSmoke\bin\Release\net11.0\win-x64\publish\CSharpDB.GeneratedCollections.TrimSmoke.exe
 ```
 
 Optional NativeAOT probe:

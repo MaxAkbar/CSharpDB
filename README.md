@@ -14,7 +14,7 @@
   <a href="https://www.nuget.org/packages/CSharpDB"><img src="https://img.shields.io/nuget/dt/CSharpDB?label=Downloads" alt="NuGet downloads"></a>
   <a href="https://github.com/MaxAkbar/CSharpDB/actions/workflows/perf-guardrails.yml"><img src="https://github.com/MaxAkbar/CSharpDB/actions/workflows/perf-guardrails.yml/badge.svg" alt="Perf Guardrails"></a>
   <a href="https://github.com/MaxAkbar/CSharpDB"><img src="https://img.shields.io/github/stars/MaxAkbar/CSharpDB?label=Stars" alt="GitHub stars"></a>
-  <a href="https://dotnet.microsoft.com/download/dotnet/10.0"><img src="https://img.shields.io/badge/.NET-10-512bd4" alt=".NET 10"></a>
+  <a href="https://dotnet.microsoft.com/download/dotnet/11.0"><img src="https://img.shields.io/badge/.NET-11-512bd4" alt=".NET 11"></a>
   <a href="https://github.com/MaxAkbar/CSharpDB"><img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-0f766e" alt="Platform: Windows, Linux, macOS"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
   <a href="https://github.com/MaxAkbar/CSharpDB/releases/latest"><img src="https://img.shields.io/github/v/release/MaxAkbar/CSharpDB?display_name=tag&label=Release" alt="Release"></a>
@@ -167,7 +167,7 @@ remains outside this slice, and INTEGER-tag values must be exactly representable
 within `±2^53`.
 
 The separate [`csharpdb-ef` migration analyzer](src/CSharpDB.EntityFrameworkCore.Tools/README.md)
-can inspect a restored `net10.0` project's compiled migration chain through the
+can inspect a restored `net11.0` project's compiled migration chain through the
 provider's real design-time services and SQL generator without adding EF Core
 design dependencies to the base CLI. Generation-only analysis remains the
 default. Its explicit `--scratch` tier applies every supported migration prefix

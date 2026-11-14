@@ -87,7 +87,7 @@ public sealed class TimeSeriesAggregation
 
 ### Prerequisites
 
-- [.NET 10 SDK](https://dotnet.microsoft.com/download) or later
+- [.NET 11 SDK](https://dotnet.microsoft.com/download) or later
 
 ### Clone and Build
 

@@ -2288,7 +2288,7 @@ public sealed class PreviousReleasePerformanceScriptTests
             $repeatCount = $CommandArgs[$repeatIndex + 1]
             $resultRoot = Join-Path `
                 (Get-Location).Path `
-                'tests/CSharpDB.Benchmarks/bin/Release/net10.0/results'
+                'tests/CSharpDB.Benchmarks/bin/Release/net11.0/results'
             New-Item -ItemType Directory -Path $resultRoot -Force | Out-Null
             $runStamp = '20260731-120000'
             $header = 'Name,TotalOps,LatencySamples,ElapsedMs,OpsPerSec,P50,P90,P95,P99,P999,Min,Max,Mean,StdDev,ExtraInfo'

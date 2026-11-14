@@ -9,7 +9,7 @@ The extension is implemented in [`vscode-extension/`](./), runs inside the VS Co
 - VS Code
 - Node.js 18 or later
 - npm
-- .NET 10 SDK
+- .NET 11 SDK
 - NativeAOT toolchain for your platform
   - Windows: Visual Studio or Build Tools with C++ workload
   - See [`src/CSharpDB.Native/README.md`](../src/CSharpDB.Native/README.md) for platform-specific details

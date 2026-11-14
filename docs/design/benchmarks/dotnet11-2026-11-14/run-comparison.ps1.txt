@@ -1,0 +1,37 @@
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+$root = $PSScriptRoot
+$outputRoot = Join-Path $root 'measured'
+New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
+$cpu = Get-CimInstance Win32_Processor | Select-Object -First 1 Name,NumberOfCores,NumberOfLogicalProcessors
+$os = Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version,TotalVisibleMemorySize,FreePhysicalMemory
+$switches = @{}
+foreach ($name in @('DOTNET_TieredPGO','DOTNET_TieredCompilation','DOTNET_ReadyToRun','DOTNET_gcServer','COMPlus_TieredPGO','COMPlus_TieredCompilation','COMPlus_ReadyToRun','COMPlus_gcServer','DOTNET_GCHeapHardLimit','DOTNET_ROLL_FORWARD')) {
+    $switches[$name] = [Environment]::GetEnvironmentVariable($name)
+}
+$artifacts = foreach ($tfm in @('net10.0','net11.0')) {
+    Get-ChildItem (Join-Path $root "runner/bin/Release/$tfm") -File |
+        Where-Object { $_.Extension -in @('.dll','.json') } |
+        ForEach-Object { [pscustomobject]@{Path=$_.FullName; Sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()} }
+}
+[ordered]@{Date='2026-11-14'; Sdk=(dotnet --version); CPU=$cpu; OS=$os; WarmupSeconds=2; MeasuredSeconds=8; Pairs=3; Order=@('net10.0','net11.0','net11.0','net10.0','net10.0','net11.0'); Switches=$switches; Artifacts=@($artifacts)} |
+    ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $root 'run-manifest.json')
+$step = 0
+foreach ($pair in 1..3) {
+    $order = if ($pair -eq 2) { @('net11.0','net10.0') } else { @('net10.0','net11.0') }
+    foreach ($tfm in $order) {
+        $step++
+        $output = Join-Path $outputRoot "pair-$pair-$tfm.json"
+        $log = Join-Path $outputRoot "pair-$pair-$tfm.log"
+        Write-Output "Starting run $step/6: pair $pair, $tfm"
+        & dotnet (Join-Path $root "runner/bin/Release/$tfm/CSharpDB.Benchmarks.dll") $output 2 8 *> $log
+        if ($LASTEXITCODE -ne 0) { Get-Content -LiteralPath $log -Tail 20; throw "Benchmark failed: pair $pair $tfm" }
+        $report = Get-Content -LiteralPath $output -Raw | ConvertFrom-Json
+        if (-not $report.CorrectnessPassed -or $report.Results.Count -ne 7) { throw 'Incomplete benchmark evidence.' }
+        Get-Content -LiteralPath $log
+    }
+}
+foreach ($artifact in $artifacts) {
+    if ((Get-FileHash -LiteralPath $artifact.Path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $artifact.Sha256) { throw "Executed artifact changed: $($artifact.Path)" }
+}
+Write-Output 'All six measured runs completed; executed artifact hashes are unchanged.'

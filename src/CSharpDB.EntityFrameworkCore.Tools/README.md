@@ -28,7 +28,7 @@ dotnet csharpdb-ef analyze `
 
 Use `--format json` for a deterministic machine-readable report.
 
-The current contract accepts one restored, single-target `net10.0` project and
+The current contract accepts one restored, single-target `net11.0` project and
 builds its Debug output with `--no-restore`. The context may be specified by
 its fully qualified name or by a unique simple name.
 
