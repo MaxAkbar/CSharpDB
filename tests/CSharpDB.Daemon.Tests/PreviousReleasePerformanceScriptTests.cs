@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Security.Cryptography;
 
 namespace CSharpDB.Daemon.Tests;
 
@@ -966,6 +967,7 @@ public sealed class PreviousReleasePerformanceScriptTests
                     [string] $OutputPath = '',
                     [int] $QualificationPass = 1,
                     [switch] $Paired,
+                    [switch] $UseHarnessSdk,
                     [string[]] $SuiteName = @(),
                     [int] $RepeatCount = 3,
                     [int] $PostBuildQuiescenceSeconds = 0,
@@ -984,6 +986,9 @@ public sealed class PreviousReleasePerformanceScriptTests
                     [string] $ProhibitedExternalProcessNames = '')
 
                 $ErrorActionPreference = 'Stop'
+                if ($env:FAKE_REQUIRE_COMMON_SDK -eq '1' -and -not $UseHarnessSdk) {
+                    throw 'The local wrapper did not forward the common SDK option.'
+                }
                 New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
                 $logRoot = Join-Path $OutputPath 'logs'
                 New-Item -ItemType Directory -Path $logRoot -Force | Out-Null
@@ -1120,6 +1125,7 @@ public sealed class PreviousReleasePerformanceScriptTests
                 new Dictionary<string, string>
                 {
                     ["FAKE_PREVIOUS_COMMIT"] = previousCommit,
+                    ["FAKE_REQUIRE_COMMON_SDK"] = "1",
                     ["FAKE_LOCAL_DURABLE_LOG"] = successLog,
                     ["FAKE_GH_LOG"] = githubLog,
                     ["FAKE_PENDING_FILE_RENAMES"] = "stable-delete",
@@ -1136,6 +1142,7 @@ public sealed class PreviousReleasePerformanceScriptTests
                 "HEAD",
                 "-OutputPath",
                 successEvidence,
+                "-UseHarnessSdk",
                 "-ConfirmDedicatedFixedSsd",
                 "-GitHubRepository",
                 "example/csharpdb");
@@ -1839,6 +1846,8 @@ public sealed class PreviousReleasePerformanceScriptTests
                 "internal static class Program { private static void Main() { } }");
             string trackedFile = Path.Combine(sourceRoot, "release.txt");
             File.WriteAllText(trackedFile, "previous");
+            string sdkManifest = Path.Combine(sourceRoot, "global.json");
+            File.WriteAllText(sdkManifest, """{"sdk":{"version":"10.0.203"}}""");
 
             await AssertProcessSucceeded("git", "-C", sourceRoot, "init");
             await AssertProcessSucceeded("git", "-C", sourceRoot, "config", "user.email", "test@example.invalid");
@@ -1848,7 +1857,8 @@ public sealed class PreviousReleasePerformanceScriptTests
             await AssertProcessSucceeded("git", "-C", sourceRoot, "commit", "-m", "previous release");
             await AssertProcessSucceeded("git", "-C", sourceRoot, "tag", "v4.3.0");
             File.WriteAllText(trackedFile, "candidate");
-            await AssertProcessSucceeded("git", "-C", sourceRoot, "add", "release.txt");
+            File.WriteAllText(sdkManifest, """{"sdk":{"version":"11.0.100"}}""");
+            await AssertProcessSucceeded("git", "-C", sourceRoot, "add", "release.txt", "global.json");
             await AssertProcessSucceeded("git", "-C", sourceRoot, "commit", "-m", "candidate");
             await AssertProcessSucceeded("git", "-C", sourceRoot, "tag", "v4.4.0");
 
@@ -2042,6 +2052,7 @@ public sealed class PreviousReleasePerformanceScriptTests
                 "HEAD",
                 "-OutputPath",
                 buildOnlyEvidence,
+                "-UseHarnessSdk",
                 "-BuildOnly");
 
             Assert.True(buildOnly.ExitCode == 0, buildOnly.CombinedOutput);
@@ -2061,6 +2072,24 @@ public sealed class PreviousReleasePerformanceScriptTests
                 "- Mode: build-only; benchmark measurements were not executed",
                 buildOnlyReport);
             Assert.Contains("CSharpDbReleaseCoreOnly=true", buildOnlyReport);
+            Assert.Contains("- SDK selection: common candidate/harness SDK", buildOnlyReport);
+            Assert.Contains(
+                "common candidate/harness SDK",
+                File.ReadAllText(Path.Combine(buildOnlyEvidence, "previous-release-performance-preflight.md")));
+            Assert.Contains("10.0.203", File.ReadAllText(Path.Combine(
+                buildOnlyEvidence, "logs", "previous-original-global.json")));
+            Assert.Contains("11.0.100", File.ReadAllText(Path.Combine(
+                buildOnlyEvidence, "logs", "candidate-original-global.json")));
+            string commonSdk = File.ReadAllText(Path.Combine(buildOnlyEvidence, "logs", "common-global.json"));
+            Assert.Contains("11.0.100", commonSdk);
+            string commonSdkHash = Convert.ToHexString(SHA256.HashData(
+                File.ReadAllBytes(Path.Combine(buildOnlyEvidence, "logs", "common-global.json")))).ToLowerInvariant();
+            foreach (string revision in new[] { "previous", "candidate" })
+            {
+                Assert.Contains(
+                    commonSdkHash + " *global.json",
+                    File.ReadAllText(Path.Combine(buildOnlyEvidence, "logs", revision + "-effective-build-inputs.sha256")));
+            }
             Assert.False(Directory.Exists(Path.Combine(
                 buildOnlyEvidence,
                 "baseline-source")));

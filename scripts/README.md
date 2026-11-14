@@ -234,11 +234,15 @@ $DiagnosticOutput = Join-Path `
   "csharpdb-local-durable-$([Guid]::NewGuid().ToString('N'))"
 
 .\tests\CSharpDB.Benchmarks\scripts\Test-LocalDurablePerformance.ps1 `
+  -UseHarnessSdk `
   -CandidateRef HEAD `
   -OutputPath $DiagnosticOutput `
   -ConfirmDedicatedFixedSsd `
   -NoGitHubStatus
 ```
+
+`-UseHarnessSdk` builds both revisions with the candidate SDK and retains their
+original SDK manifests in the per-pass evidence logs.
 
 ## Operator Walkthrough
 

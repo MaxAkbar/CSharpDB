@@ -171,6 +171,7 @@ jobs:
             -PreviousRef 2f141433298bcd3137e2bcaa2930c796c4222092 `
             -CandidateRef $env:CANDIDATE_REF `
             -OutputPath $env:COMPATIBILITY_OUTPUT `
+            -UseHarnessSdk `
             -BuildOnly
 
       - name: Upload compatibility evidence

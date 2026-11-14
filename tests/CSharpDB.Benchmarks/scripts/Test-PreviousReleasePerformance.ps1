@@ -68,6 +68,8 @@ param(
 
     [switch] $PreflightOnly,
 
+    [switch] $UseHarnessSdk,
+
     [switch] $BuildOnly
 )
 
@@ -3465,6 +3467,23 @@ try {
     }
     $candidateAdded = $true
 
+    if ($UseHarnessSdk) {
+        # A synchronized candidate harness may target a framework newer than
+        # the historical product's SDK supports. Preserve that SDK provenance,
+        # then capture effective build inputs after selecting the common SDK.
+        $commonSdkPath = Join-Path $logRoot 'common-global.json'
+        Copy-Item -LiteralPath (Join-Path $candidateWorktree 'global.json') -Destination $commonSdkPath
+        foreach ($sdkWorktree in @($baselineWorktree, $candidateWorktree)) {
+            $sdkLabel = if ($sdkWorktree -eq $baselineWorktree) { 'previous' } else { 'candidate' }
+            $sdkPath = Join-Path $sdkWorktree 'global.json'
+            if (Test-Path -LiteralPath $sdkPath -PathType Leaf) {
+                Copy-Item -LiteralPath $sdkPath -Destination (Join-Path $logRoot "$sdkLabel-original-global.json")
+            }
+            Copy-Item -LiteralPath $commonSdkPath -Destination $sdkPath
+        }
+        Add-Content -LiteralPath $preflightPath -Value '- SDK policy: common candidate/harness SDK; original SDK manifests are retained in logs.'
+    }
+
     $previousBuildInputsIdentity = Write-EffectiveBuildInputManifest `
         -SourceRoot $baselineWorktree `
         -Commit $previousCommit `
@@ -3556,6 +3575,7 @@ try {
                 '- Result: **PASS**',
                 '- Mode: build-only; benchmark measurements were not executed',
                 '- MSBuild release-core profile: ``CSharpDbReleaseCoreOnly=true``',
+                "- SDK selection: $(if ($UseHarnessSdk) { 'common candidate/harness SDK' } else { 'per-revision SDK' })",
                 "- Previous ref: ``$PreviousRef`` (``$previousCommit``)",
                 "- Candidate ref: ``$CandidateRef`` (``$candidateCommit``)",
                 "- Candidate benchmark harness SHA-256: ``$candidateHarnessIdentity``",

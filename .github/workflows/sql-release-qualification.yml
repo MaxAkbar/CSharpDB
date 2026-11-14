@@ -129,6 +129,7 @@ jobs:
             -PreviousRef $env:PREVIOUS_RELEASE_REF `
             -CandidateRef $env:CANDIDATE_REF `
             -OutputPath $env:PERFORMANCE_OUTPUT `
+            -UseHarnessSdk `
             -QualificationPass 1 `
             -Paired `
             -SuiteName master-table-hosted-stable `
