@@ -421,7 +421,11 @@ public sealed class DaemonPackagingAssetsTests
             "scripts",
             "Test-PreviousReleasePerformance.ps1"));
 
-        Assert.Contains("schedule:", guardrailWorkflow);
+        string normalizedGuardrailWorkflow = guardrailWorkflow.ReplaceLineEndings("\n");
+        Assert.DoesNotContain("\n  schedule:", normalizedGuardrailWorkflow);
+        Assert.Contains("\n  push:\n    branches: [main]\n    paths:", normalizedGuardrailWorkflow);
+        Assert.Contains("\n  pull_request:\n    paths:", normalizedGuardrailWorkflow);
+        Assert.Contains("\n  workflow_dispatch:", normalizedGuardrailWorkflow);
         Assert.Contains("-NoFailOnRegression", guardrailWorkflow);
         Assert.Contains("--durable-sql-batching", releaseThresholds);
 
