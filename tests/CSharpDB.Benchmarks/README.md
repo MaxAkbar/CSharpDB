@@ -396,7 +396,8 @@ When explicitly requested, the local wrapper can still publish a diagnostic
 That status is retained for audit and tooling compatibility only; the hosted
 release path does not read it.
 
-The scheduled perf-guardrail workflow reports timing regressions and always
+The perf-guardrail workflow runs on relevant code pushes to `main`, pull requests,
+and manual dispatches, not on a daily schedule. It reports timing regressions and always
 fails invalid evidence. It compares the head product commit with its parent
 (PRs use the PR base SHA; manual runs can select `base_ref`) in the same job.
 The other supplemental two-revision suites remain selectable with

@@ -1,6 +1,21 @@
 name: Perf Guardrails
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "tests/CSharpDB.Benchmarks/**"
+      - "tests/CSharpDB.Benchmarks.Tests/**"
+      - "global.json"
+      - "**/*.props"
+      - "**/*.targets"
+      - "**/*.csproj"
+      - "**/packages.lock.json"
+      - "**/packages.config"
+      - "**/[Nn]u[Gg]et.[Cc]onfig"
+      - ".config/dotnet-tools.json"
+      - ".github/workflows/perf-guardrails.yml"
   pull_request:
     paths:
       - "src/**"
@@ -27,8 +42,6 @@ on:
         required: false
         default: ""
         type: string
-  schedule:
-    - cron: "0 10 * * *"
 
 permissions:
   contents: read
