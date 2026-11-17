@@ -122,6 +122,8 @@ dotnet publish src/CSharpDB.Native -c Release -r osx-x64
 
 Output: `src/CSharpDB.Native/bin/Release/net11.0/osx-arm64/publish/CSharpDB.Native.dylib`
 
+The project sets `UseNativeLibPrefix=false` to preserve these public filenames on Unix; .NET 11 otherwise adds a `lib` prefix.
+
 ### Android
 
 ```bash
@@ -149,7 +151,7 @@ dotnet publish src/CSharpDB.Native -c Release -r ios-arm64
 You can cross-compile from one platform to another if the appropriate toolchain is installed. For example, to build a Linux library from Windows using WSL or a Docker container:
 
 ```bash
-docker run --rm -v $(pwd):/src -w /src mcr.microsoft.com/dotnet/sdk:10.0 \
+docker run --rm -v $(pwd):/src -w /src mcr.microsoft.com/dotnet/sdk:11.0 \
     dotnet publish src/CSharpDB.Native -c Release -r linux-x64
 ```
 
@@ -747,9 +749,9 @@ class CSharpDB:
             if sys.platform == "win32":
                 lib_path = "./CSharpDB.Native.dll"
             elif sys.platform == "darwin":
-                lib_path = "./libCSharpDB.Native.dylib"
+                lib_path = "./CSharpDB.Native.dylib"
             else:
-                lib_path = "./libCSharpDB.Native.so"
+                lib_path = "./CSharpDB.Native.so"
 
         self._lib = ctypes.CDLL(lib_path)
         self._setup_signatures()
@@ -1196,8 +1198,8 @@ typedef CsharpdbClose = void Function(Pointer<Void>);
 void main() {
   final lib = DynamicLibrary.open(
     Platform.isWindows ? 'CSharpDB.Native.dll' :
-    Platform.isMacOS   ? 'libCSharpDB.Native.dylib' :
-                         'libCSharpDB.Native.so'
+    Platform.isMacOS   ? 'CSharpDB.Native.dylib' :
+                         'CSharpDB.Native.so'
   );
 
   final open = lib.lookupFunction<CsharpdbOpenNative, CsharpdbOpen>('csharpdb_open');
@@ -1273,8 +1275,8 @@ const DbType = { NULL: 0, INTEGER: 1, REAL: 2, TEXT: 3, BLOB: 4, DECIMAL: 5 };
 function loadLibrary(libPath) {
   if (!libPath) {
     if (process.platform === "win32") libPath = "./CSharpDB.Native.dll";
-    else if (process.platform === "darwin") libPath = "./libCSharpDB.Native.dylib";
-    else libPath = "./libCSharpDB.Native.so";
+    else if (process.platform === "darwin") libPath = "./CSharpDB.Native.dylib";
+    else libPath = "./CSharpDB.Native.so";
   }
   return koffi.load(libPath);
 }
@@ -1881,8 +1883,11 @@ On Windows, ensure the DLL is in the same folder as the `.exe` or in `PATH`.
 Verify the library was published with NativeAOT:
 
 ```bash
-# Linux/macOS
-nm -D libCSharpDB.Native.so | grep csharpdb_
+# Linux
+nm -D CSharpDB.Native.so | grep csharpdb_
+
+# macOS
+nm -gU CSharpDB.Native.dylib | grep csharpdb_
 
 # Windows (from VS Developer Command Prompt)
 dumpbin /exports CSharpDB.Native.dll

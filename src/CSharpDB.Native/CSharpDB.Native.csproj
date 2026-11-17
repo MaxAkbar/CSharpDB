@@ -23,6 +23,8 @@
     <Description>NativeAOT shared library exposing CSharpDB as a C-compatible API for cross-language consumption via FFI.</Description>
     <!-- Produce a shared library (.dll/.so/.dylib) instead of an executable -->
     <NativeLib>Shared</NativeLib>
+    <!-- Preserve the existing Unix filenames; .NET 11 otherwise adds a lib prefix. -->
+    <UseNativeLibPrefix>false</UseNativeLibPrefix>
     <!-- Strip symbols for smaller binary in release -->
     <StripSymbols>true</StripSymbols>
   </PropertyGroup>
