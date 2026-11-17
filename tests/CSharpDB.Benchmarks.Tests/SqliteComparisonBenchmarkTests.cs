@@ -398,6 +398,79 @@ public sealed class SqliteComparisonBenchmarkTests
         Assert.Equal("operation failed before cap", exception.Message);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Measurement_DurationReachedAfterProgressRead_DoesNotLoseWakeup(bool concurrent)
+    {
+        SqliteComparisonBenchmark.MeasurementPolicy policy = CreateFastPolicy();
+        var sampleRecorded = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using var deadline = new DurationCompletingAfterProgressReadDeadline(sampleRecorded.Task);
+
+        async Task<(TimeSpan Elapsed, int Samples)> RunMeasurementAsync()
+        {
+            if (concurrent)
+            {
+                SqliteComparisonBenchmark.ConcurrentReaderPhaseResult result =
+                    await SqliteComparisonBenchmark.RunConcurrentReaderWorkersAsync(
+                        "sqlite-concurrent-duration-notification",
+                        readerCount: 1,
+                        policy,
+                        async (_, tryRecord, ct) =>
+                        {
+                            Assert.True(tryRecord(static () => { }, retainsLatencySample: true).Accepted);
+                            sampleRecorded.TrySetResult();
+                            await WaitForCoordinatedCancellationAsync(ct);
+                        },
+                        deadline,
+                        BenchmarkTestWatchdog.SchedulingTimeout);
+                return (result.Elapsed, result.RetainedLatencySamples);
+            }
+
+            int operationCount = 0;
+            BenchmarkResult sequentialResult = await SqliteComparisonBenchmark.RunSequentialScenarioCoreAsync(
+                "sqlite-sequential-duration-notification",
+                ct =>
+                {
+                    if (Interlocked.Increment(ref operationCount) == 1)
+                        return Task.CompletedTask;
+
+                    // Starting the next operation proves the first sample was recorded.
+                    sampleRecorded.TrySetResult();
+                    return Task.Delay(Timeout.InfiniteTimeSpan, ct);
+                },
+                policy,
+                deadline,
+                BenchmarkTestWatchdog.SchedulingTimeout);
+            return (TimeSpan.FromMilliseconds(sequentialResult.ElapsedMs), sequentialResult.LatencySamples);
+        }
+
+        Task<(TimeSpan Elapsed, int Samples)> phaseTask = RunMeasurementAsync();
+        try
+        {
+            (TimeSpan elapsed, int samples) = await phaseTask.WaitAsync(
+                BenchmarkTestWatchdog.SchedulingTimeout,
+                TestContext.Current.CancellationToken);
+            Assert.Equal(policy.MinimumMeasuredDuration, elapsed);
+            Assert.Equal(policy.MinimumLatencySamples, samples);
+            Assert.True(deadline.CompletedDurationAfterProgressRead);
+            Assert.False(deadline.Expired.IsCompleted);
+        }
+        finally
+        {
+            // Release a broken controller as well, so a regression leaves no workers behind.
+            deadline.AdvanceTo(policy.MaximumMeasuredDuration, expire: true);
+            try
+            {
+                await phaseTask.WaitAsync(
+                    BenchmarkTestWatchdog.SchedulingTimeout,
+                    TestContext.Current.CancellationToken);
+            }
+            catch (InvalidOperationException) { }
+        }
+    }
+
     [Fact]
     public async Task ConcurrentReaders_DelayedSchedulingStartsEveryWorkerBeforeMeasurement()
     {
@@ -819,6 +892,52 @@ public sealed class SqliteComparisonBenchmarkTests
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
         }
+    }
+
+    private sealed class DurationCompletingAfterProgressReadDeadline(Task sampleRecorded) :
+        SqliteComparisonBenchmark.IMeasurementDeadline
+    {
+        private readonly ManualMeasurementDeadline _inner = new();
+        private TimeSpan _minimumDuration;
+        private int _completeDurationOnNextRead;
+
+        public TimeSpan Elapsed
+        {
+            get
+            {
+                TimeSpan elapsed = _inner.Elapsed;
+                if (Interlocked.Exchange(ref _completeDurationOnNextRead, 0) != 0)
+                {
+                    _inner.AdvanceTo(_minimumDuration);
+                    CompletedDurationAfterProgressRead = true;
+                }
+                return elapsed;
+            }
+        }
+
+        public CancellationToken Token => _inner.Token;
+        public Task Expired => _inner.Expired;
+        internal bool CompletedDurationAfterProgressRead { get; private set; }
+
+        public void Start() => _inner.Start();
+
+        public Task WaitUntilAsync(TimeSpan elapsed)
+        {
+            Task durationReached = _inner.WaitUntilAsync(elapsed);
+            // Keep worker reads outside the injected controller interleaving.
+            sampleRecorded.WaitAsync(
+                BenchmarkTestWatchdog.SchedulingTimeout,
+                TestContext.Current.CancellationToken).GetAwaiter().GetResult();
+            _minimumDuration = elapsed;
+            Volatile.Write(ref _completeDurationOnNextRead, 1);
+            return durationReached;
+        }
+
+        internal void AdvanceTo(TimeSpan elapsed, bool expire = false)
+            => _inner.AdvanceTo(elapsed, expire);
+
+        public void Cancel() => _inner.Cancel();
+        public void Dispose() => _inner.Dispose();
     }
 
     private sealed class ManualMeasurementDeadline :
