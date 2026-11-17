@@ -446,15 +446,12 @@ internal sealed class TransactionCoordinator : IDisposable
         return false;
     }
 
-    public async ValueTask WaitForCommitStateChangeAsync(CancellationToken ct = default)
+    public Task CaptureCommitStateChangeTask()
     {
-        Task waitTask;
         lock (_pageVersionGate)
         {
-            waitTask = _commitStateChanged.Task;
+            return _commitStateChanged.Task;
         }
-
-        await waitTask.WaitAsync(ct);
     }
 
     public bool HasLogicalConflict(

@@ -2148,6 +2148,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                 while (true)
                 {
                     bool waitForCommitStateChange = false;
+                    Task? commitStateChange = null;
                     long commitLockWaitStartTicks = Stopwatch.GetTimestamp();
                     IDisposable? commitLock = _transactions is not null
                         ? await _transactions.AcquireCommitLockAsync(ct)
@@ -2156,6 +2157,10 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                     long commitLockHoldStartTicks = commitLock is not null ? Stopwatch.GetTimestamp() : 0;
                     try
                     {
+                        // Capture the signal before checking pending conflicts.
+                        // A commit can publish after that check but before this
+                        // transaction releases the commit lock and starts waiting.
+                        commitStateChange = _transactions?.CaptureCommitStateChangeTask();
                         long conflictResolutionStartTicks = Stopwatch.GetTimestamp();
                         bool needsFreelistRebase = tx.ConsumedFreelistPageIds.Count > 0 || tx.PendingFreelistPageIds.Count > 0;
                         while (true)
@@ -2293,7 +2298,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                     if (!waitForCommitStateChange)
                         break;
 
-                    await _transactions!.WaitForCommitStateChangeAsync(ct);
+                    await commitStateChange!.WaitAsync(ct);
                 }
             }
             catch
