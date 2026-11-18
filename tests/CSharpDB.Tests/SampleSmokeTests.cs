@@ -15,7 +15,7 @@ public sealed class SampleSmokeTests : IAsyncLifetime
     private const string SampleConfiguration = "Release";
 #endif
 
-    private const string SampleTargetFramework = "net10.0";
+    private const string SampleTargetFramework = "net11.0";
     private static readonly TimeSpan SampleProcessTimeout = TimeSpan.FromMinutes(2);
 
     private readonly string _dbPath;

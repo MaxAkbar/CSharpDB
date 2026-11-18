@@ -894,7 +894,7 @@ public static class NativeAotInsertComparisonBenchmark
                         "CSharpDB.Native",
                         "bin",
                         "Release",
-                        "net10.0",
+                        "net11.0",
                         rid,
                         "publish",
                         "CSharpDB.Native" + extension);

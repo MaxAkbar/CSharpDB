@@ -252,7 +252,7 @@ setting. Authentication modes that require
 
 ## Runtime and bitness status
 
-The project targets `net10.0` and does not bundle a SQL Server engine or other
+The project targets `net11.0` and does not bundle a SQL Server engine or other
 server-side native runtime. Microsoft.Data.SqlClient brings its own managed and
 platform transport dependencies, including transitive SNI runtime assets where
 the package requires them. The generic CLI has no SQL Server project or package

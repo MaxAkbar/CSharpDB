@@ -1034,7 +1034,12 @@ public static class FormulaEvaluator
             digits = (int)parsedDigits;
         }
 
-        return Math.Round(value, digits, MidpointRounding.ToEven);
+        // Access-style Round retains the scale/round/unscale behavior used
+        // before .NET 11 corrected Math.Round(double, digits).
+        if (Math.Abs(value) >= 1e16)
+            return value;
+        double factor = Math.Pow(10, digits);
+        return Math.Round(value * factor, MidpointRounding.ToEven) / factor;
     }
 
     private static object? EvaluateDomainFunction(

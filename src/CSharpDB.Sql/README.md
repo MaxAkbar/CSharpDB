@@ -3,7 +3,7 @@
 SQL tokenizer, recursive-descent parser, and abstract syntax tree (AST) for the [CSharpDB](https://github.com/MaxAkbar/CSharpDB) embedded database engine.
 
 [![NuGet](https://img.shields.io/nuget/v/CSharpDB.Sql)](https://www.nuget.org/packages/CSharpDB.Sql)
-[![.NET 10](https://img.shields.io/badge/.NET-10-512bd4)](https://dotnet.microsoft.com/download/dotnet/10.0)
+[![.NET 11](https://img.shields.io/badge/.NET-11-512bd4)](https://dotnet.microsoft.com/download/dotnet/11.0)
 [![Release](https://img.shields.io/github/v/release/MaxAkbar/CSharpDB?display_name=tag&label=Release)](https://github.com/MaxAkbar/CSharpDB/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/MaxAkbar/CSharpDB/blob/main/LICENSE)
 

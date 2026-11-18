@@ -832,7 +832,7 @@ public sealed class MySqlWorkerClientTests
                 "CSharpDB.Migration.MySql.WorkerHarness",
                 "bin",
                 BuildConfiguration,
-                "net10.0");
+                "net11.0");
             string appHost = Path.Combine(
                 candidate,
                 OperatingSystem.IsWindows()

@@ -442,6 +442,10 @@ public static class SqliteComparisonBenchmark
                 break;
             }
 
+            // Ignore only signals that completed before this progress snapshot.
+            // A later completion must wake the controller to read progress again.
+            bool durationSignalAlreadyCompleted = minimumDurationReached.IsCompleted;
+            bool sampleSignalAlreadyCompleted = minimumSamplesReached.Task.IsCompleted;
             measurementElapsed = deadline.Elapsed;
             int sampleCount = sampleCounter.RetainedLatencySamples;
             if (!deadline.Expired.IsCompleted &&
@@ -481,10 +485,10 @@ public static class SqliteComparisonBenchmark
                 break;
             }
 
-            Task durationSignal = minimumDurationReached.IsCompleted
+            Task durationSignal = durationSignalAlreadyCompleted
                 ? Task.Delay(Timeout.InfiniteTimeSpan)
                 : minimumDurationReached;
-            Task sampleSignal = minimumSamplesReached.Task.IsCompleted
+            Task sampleSignal = sampleSignalAlreadyCompleted
                 ? Task.Delay(Timeout.InfiniteTimeSpan)
                 : minimumSamplesReached.Task;
             await Task.WhenAny(
@@ -751,6 +755,10 @@ public static class SqliteComparisonBenchmark
                 break;
             }
 
+            // Ignore only signals that completed before this progress snapshot.
+            // A later completion must wake the controller to read progress again.
+            bool durationSignalAlreadyCompleted = minimumDurationReached.IsCompleted;
+            bool sampleSignalAlreadyCompleted = minimumSamplesReached.Task.IsCompleted;
             measurementElapsed = deadline.Elapsed;
             int sampleCount = sampleCounter.RetainedLatencySamples;
             if (!deadline.Expired.IsCompleted &&
@@ -786,10 +794,10 @@ public static class SqliteComparisonBenchmark
                 break;
             }
 
-            Task durationSignal = minimumDurationReached.IsCompleted
+            Task durationSignal = durationSignalAlreadyCompleted
                 ? Task.Delay(Timeout.InfiniteTimeSpan)
                 : minimumDurationReached;
-            Task sampleSignal = minimumSamplesReached.Task.IsCompleted
+            Task sampleSignal = sampleSignalAlreadyCompleted
                 ? Task.Delay(Timeout.InfiniteTimeSpan)
                 : minimumSamplesReached.Task;
             await Task.WhenAny(

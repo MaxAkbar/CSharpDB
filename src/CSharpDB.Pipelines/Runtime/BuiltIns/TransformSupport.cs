@@ -36,6 +36,8 @@ internal static class TransformSupport
             DbType.Decimal => value switch
             {
                 decimal decimalValue => decimalValue,
+                double real => CSharpDbDecimalCodec.FromDouble(real),
+                float real => CSharpDbDecimalCodec.FromSingle(real),
                 _ => Convert.ToDecimal(value, CultureInfo.InvariantCulture),
             },
             DbType.Text => value switch

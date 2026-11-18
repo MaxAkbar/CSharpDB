@@ -216,7 +216,7 @@ Both strategies intentionally **over-scan** and **post-filter**. The `SpatialQue
 
 ### Prerequisites
 
-- .NET 10 SDK
+- .NET 11 SDK
 - CSharpDB.Storage project (referenced in the solution)
 
 ### CLI Mode (Interactive REPL)

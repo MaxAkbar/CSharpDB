@@ -12,7 +12,7 @@ internal sealed class AdminHostProcess : IAsyncDisposable
     private const string AdminExecutableName = "CSharpDB.Admin.exe";
     private const string AdminExecutableEnvironmentVariable = "CSHARPDB_ADMIN_EXE";
     private const string DesktopShellTokenHeaderName = "X-CSharpDB-Desktop-Shell-Token";
-    private const string AdminTargetFramework = "net10.0";
+    private const string AdminTargetFramework = "net11.0";
 
 #if DEBUG
     private const string BuildConfiguration = "Debug";

@@ -339,8 +339,12 @@ public sealed class HealthHostTests
         var initialization = NewInfoCompletion();
         proxy.GetInfoHandler = (_, _) => initialization.Task;
 
+        // Keep initialization pending while the endpoint assertions run; its
+        // timeout/retry behavior is covered by separate deadline tests.
+        CSharpDbObservabilityOptions options = DisabledObservabilityOptions();
+        options.Health.ReadinessTimeout = TimeSpan.FromSeconds(30);
         WebApplicationBuilder builder = CreateBuilder();
-        builder.Services.AddSingleton(DisabledObservabilityOptions());
+        builder.Services.AddSingleton(options);
         builder.Services.AddSingleton(client);
         builder.Services.AddCSharpDbHealth(DiagnosticsSource.Api);
         builder.Services.AddCSharpDbRestApi(security =>

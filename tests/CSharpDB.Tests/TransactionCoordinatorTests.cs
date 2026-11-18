@@ -4,6 +4,32 @@ namespace CSharpDB.Tests;
 
 public sealed class TransactionCoordinatorTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CapturedCommitStateChange_Completes_WhenPendingCommitFinishesBeforeAwait(bool revert)
+    {
+        using var coordinator = new TransactionCoordinator();
+        coordinator.RegisterExplicitTransaction(transactionId: 1, startVersion: 0);
+        TransactionCoordinator.PendingCommitReservation reservation = coordinator.ReservePendingCommit(
+            new uint[] { 1u }, Array.Empty<LogicalConflictKey>());
+
+        Task stateChange = coordinator.CaptureCommitStateChangeTask();
+        Assert.True(coordinator.TryGetPageLastWriteVersion(1u, out long pendingVersion));
+        Assert.True(pendingVersion > coordinator.CurrentCommitVersion);
+
+        // Reproduce the completion between observing a pending conflict and
+        // actually awaiting its signal, without another commit to wake us.
+        if (revert)
+            coordinator.RevertPendingCommit(reservation);
+        else
+            coordinator.PublishPendingCommit(reservation);
+
+        Assert.True(stateChange.IsCompletedSuccessfully);
+        await stateChange.WaitAsync(TestContext.Current.CancellationToken);
+        Assert.False(coordinator.CaptureCommitStateChangeTask().IsCompleted);
+    }
+
     [Fact]
     public void PublishPendingCommit_PrunesConflictState_WhenNoExplicitTransactionsRemain()
     {

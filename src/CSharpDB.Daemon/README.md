@@ -165,7 +165,7 @@ For best remote performance:
 
 ## Requirements
 
-- .NET SDK 10.0 or newer to build from source
+- .NET SDK 11.0 or newer to build from source
 - no .NET SDK requirement when using the self-contained release archives
 - a filesystem location where the daemon can create and update:
   - `*.db`

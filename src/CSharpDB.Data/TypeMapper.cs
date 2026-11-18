@@ -162,7 +162,7 @@ internal static class TypeMapper
     {
         CoreDbType.Decimal => value.AsDecimal,
         CoreDbType.Integer => value.AsInteger,
-        CoreDbType.Real => checked((decimal)value.AsReal),
+        CoreDbType.Real => CSharpDbDecimalCodec.FromDouble(value.AsReal),
         _ => throw new InvalidOperationException($"Cannot read {value.Type} as Decimal."),
     };
 

@@ -130,8 +130,11 @@ public static class FormControlValueConverter
             case sbyte or byte or short or ushort or int or uint or long or ulong:
                 result = Convert.ToDecimal(value, CultureInfo.InvariantCulture);
                 return true;
-            case float or double:
-                result = Convert.ToDecimal(value, CultureInfo.InvariantCulture);
+            case double real:
+                result = CSharpDB.Primitives.CSharpDbDecimalCodec.FromDouble(real);
+                return true;
+            case float real:
+                result = CSharpDB.Primitives.CSharpDbDecimalCodec.FromSingle(real);
                 return true;
             case string text:
                 return TryConvertTextToDecimal(text, out result);

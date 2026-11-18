@@ -702,7 +702,7 @@ public sealed class MigrationProcessCrashRecoveryTests
                 "CSharpDB.Migration.CrashHarness",
                 "bin",
                 BuildConfiguration,
-                "net10.0",
+                "net11.0",
                 "CSharpDB.Migration.CrashHarness.dll");
             if (File.Exists(candidate))
                 return candidate;

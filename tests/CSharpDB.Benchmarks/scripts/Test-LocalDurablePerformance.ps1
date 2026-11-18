@@ -8,6 +8,8 @@ param(
 
     [string] $OutputPath = '',
 
+    [switch] $UseHarnessSdk,
+
     [ValidateSet(3, 5, 7, 9)]
     [int] $RepeatCount = 3,
 
@@ -949,6 +951,9 @@ try {
                 $RequiredConsecutiveBusySamples
             $parameters.ProhibitedExternalProcessNames =
                 $ProhibitedExternalProcessNames
+        }
+        if ($UseHarnessSdk) {
+            $parameters.UseHarnessSdk = $true
         }
         if (-not [string]::IsNullOrWhiteSpace($previousCommit)) {
             $parameters.PreviousRef = $previousCommit

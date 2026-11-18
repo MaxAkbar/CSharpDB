@@ -136,8 +136,6 @@ function Assert-ReviewedWorkerPackageClosure {
     )
 
     $expectedPackages = @(
-        'Microsoft.Extensions.DependencyInjection.Abstractions/8.0.2'
-        'Microsoft.Extensions.Logging.Abstractions/8.0.2'
         'MySqlConnector/2.6.2'
     ) | Sort-Object
 
@@ -213,8 +211,6 @@ $requiredFiles = @(
     (Join-Path $workerOutput 'CSharpDB.Migration.Retained.dll'),
     (Join-Path $workerOutput 'CSharpDB.Migration.MySql.dll'),
     (Join-Path $workerOutput 'MySqlConnector.dll'),
-    (Join-Path $workerOutput 'Microsoft.Extensions.DependencyInjection.Abstractions.dll'),
-    (Join-Path $workerOutput 'Microsoft.Extensions.Logging.Abstractions.dll'),
     (Join-Path $workerOutput 'THIRD-PARTY-NOTICES.md'),
     (Join-Path $workerOutput 'csharpdb-migration-mysql-worker.deps.json')
 )

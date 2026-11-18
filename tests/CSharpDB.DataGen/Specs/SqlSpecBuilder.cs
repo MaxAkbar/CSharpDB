@@ -112,7 +112,7 @@ public static class SqlSpecBuilder
         });
         if (type.StorageType == DbType.Blob && value is string text && type.Kind is not SqlTypeKind.Uuid)
             value = System.Text.Encoding.UTF8.GetBytes(text);
-        if (type.StorageType == DbType.Decimal && value is double number) value = (decimal)number;
+        if (type.StorageType == DbType.Decimal && value is double number) value = CSharpDbDecimalCodec.FromDouble(number);
         return CSharpDB.DataGeneration.GenerationValues.Assign(value, new ColumnDefinition
         {
             Name = column.Name, Type = type.StorageType, DeclaredType = type,

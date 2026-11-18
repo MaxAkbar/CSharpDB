@@ -1,0 +1,141 @@
+using System.Diagnostics;
+using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text.Json;
+using CSharpDB.Benchmarks.Infrastructure;
+using CSharpDB.Engine;
+using CSharpDB.Primitives;
+using CSharpDB.Sql;
+
+if (args.Length != 3)
+    throw new ArgumentException("Usage: output.json warmupSeconds measuredSeconds");
+string output = Path.GetFullPath(args[0]);
+if (File.Exists(output)) throw new IOException("Evidence output must be new.");
+double warmupSeconds = double.Parse(args[1], System.Globalization.CultureInfo.InvariantCulture);
+double measuredSeconds = double.Parse(args[2], System.Globalization.CultureInfo.InvariantCulture);
+BenchmarkProcessTuner.ConfigureIfRequested(true, 8);
+Environment.SetEnvironmentVariable("CSHARPDB_BENCH_DURABILITY", "Durable");
+var rows = new List<object>();
+var checks = new List<object>();
+var started = DateTimeOffset.UtcNow;
+long sink = 0;
+
+foreach (var workload in new[] { (Name: "In-memory single INSERT", Memory: true, Batch: 1), (Name: "Durable single INSERT", Memory: false, Batch: 1), (Name: "Durable prepared batch (100 rows)", Memory: false, Batch: 100) })
+{
+    if (workload.Memory || workload.Batch != 1) continue;
+    string file = Path.Combine(Path.GetDirectoryName(output)!, $"{Path.GetFileNameWithoutExtension(output)}-{workload.Batch}-{workload.Memory}.db");
+    Database db = workload.Memory ? await Database.OpenInMemoryAsync() : await Database.OpenAsync(file, BenchmarkDurability.Apply());
+    try
+    {
+        await using (var created = await db.ExecuteAsync("CREATE TABLE bench (id INTEGER PRIMARY KEY, value INTEGER, text_col TEXT, category TEXT)")) { }
+        int nextId = 0;
+        InsertBatch? batch = workload.Batch == 100 ? db.PrepareInsertBatch("bench", 100) : null;
+        var values = new DbValue[4];
+        values[2] = DbValue.FromText("runtime-comparison-50-character-payload-for-inserts!");
+        values[3] = DbValue.FromText("Alpha");
+        await Measure(workload.Name, async () =>
+        {
+            if (batch is null)
+            {
+                int id = ++nextId;
+                await using var result = await db.ExecuteAsync($"INSERT INTO bench VALUES ({id}, {id * 10L}, 'runtime-comparison-50-character-payload-for-inserts!', 'Alpha')");
+                if (result.RowsAffected != 1) throw new InvalidOperationException("Insert affected-row mismatch.");
+            }
+            else
+            {
+                batch.Clear();
+                await db.BeginTransactionAsync();
+                for (int i = 0; i < 100; i++)
+                {
+                    int id = ++nextId;
+                    values[0] = DbValue.FromInteger(id);
+                    values[1] = DbValue.FromInteger(id * 10L);
+                    batch.AddRow(values);
+                }
+                if (await batch.ExecuteAsync() != 100) throw new InvalidOperationException("Batch affected-row mismatch.");
+                await db.CommitAsync();
+            }
+        }, unitsPerOperation: workload.Batch, sampleEvery: workload.Memory ? 8 : 1);
+        await Verify(db, nextId);
+        if (!workload.Memory)
+        {
+            await db.DisposeAsync();
+            db = await Database.OpenAsync(file, BenchmarkDurability.Apply());
+            await Verify(db, nextId);
+        }
+        checks.Add(new { workload.Name, ExpectedRows = nextId, ExpectedSum = checked((long)nextId * (nextId + 1) / 2 * 10), ReopenVerified = !workload.Memory });
+    }
+    finally { await db.DisposeAsync(); }
+}
+
+var assemblies = new[] { typeof(Database).Assembly, typeof(Parser).Assembly, typeof(DbValue).Assembly, Assembly.GetExecutingAssembly() }
+    .Select(assembly => new { Name = assembly.GetName().Name, Sha256 = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(assembly.Location))).ToLowerInvariant() }).ToArray();
+var report = new
+{
+    SchemaVersion = 1, StartedUtc = started, CompletedUtc = DateTimeOffset.UtcNow,
+    Runtime = RuntimeInformation.FrameworkDescription, RuntimeVersion = Environment.Version.ToString(),
+    Framework = AppContext.TargetFrameworkName, Architecture = RuntimeInformation.ProcessArchitecture.ToString(),
+    OS = RuntimeInformation.OSDescription, ProcessorCount = Environment.ProcessorCount,
+    WarmupSeconds = warmupSeconds, MeasuredSeconds = measuredSeconds, Durability = "Durable",
+    RuntimeAsyncOptIn = false, CorrectnessPassed = true, Sink = sink, Assemblies = assemblies, Results = rows, Checks = checks
+};
+Directory.CreateDirectory(Path.GetDirectoryName(output)!);
+await File.WriteAllTextAsync(output, JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }));
+Console.WriteLine($"Correctness and durable reopen checks passed. {output}");
+
+async Task Measure(string name, Func<ValueTask> operation, int unitsPerOperation = 1, int sampleEvery = 8)
+{
+    var warmup = Stopwatch.StartNew();
+    while (warmup.Elapsed.TotalSeconds < warmupSeconds) await operation();
+    double[] samples = new double[1_000_000];
+    GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+    using var process = Process.GetCurrentProcess();
+    long startAllocated = GC.GetTotalAllocatedBytes(precise: true);
+    int gen0 = GC.CollectionCount(0), gen1 = GC.CollectionCount(1), gen2 = GC.CollectionCount(2);
+    TimeSpan startCpu = process.TotalProcessorTime;
+    long began = Stopwatch.GetTimestamp();
+    long operations = 0;
+    int retained = 0;
+    double durationTicks = measuredSeconds * Stopwatch.Frequency;
+    while (Stopwatch.GetTimestamp() - began < durationTicks)
+    {
+        if (operations % sampleEvery == 0)
+        {
+            long before = Stopwatch.GetTimestamp();
+            await operation();
+            long after = Stopwatch.GetTimestamp();
+            if (retained == samples.Length) throw new InvalidOperationException("Latency evidence capacity exceeded.");
+            samples[retained++] = (after - before) * 1_000_000d / Stopwatch.Frequency;
+        }
+        else await operation();
+        operations++;
+    }
+    long elapsedTicks = Stopwatch.GetTimestamp() - began;
+    double cpuMs = (process.TotalProcessorTime - startCpu).TotalMilliseconds;
+    long allocated = GC.GetTotalAllocatedBytes(precise: true) - startAllocated;
+    int collected0 = GC.CollectionCount(0) - gen0, collected1 = GC.CollectionCount(1) - gen1, collected2 = GC.CollectionCount(2) - gen2;
+    Array.Sort(samples, 0, retained);
+    if (operations <= 0 || retained < 100) throw new InvalidOperationException("Insufficient retained measurements.");
+    double elapsed = elapsedTicks / (double)Stopwatch.Frequency;
+    long units = operations * unitsPerOperation;
+    double Percentile(double p) => samples[Math.Clamp((int)Math.Ceiling(retained * p) - 1, 0, retained - 1)];
+    rows.Add(new
+    {
+        Name = name, Operations = operations, Units = units, UnitsPerOperation = unitsPerOperation,
+        ElapsedSeconds = elapsed, OperationsPerSecond = operations / elapsed, UnitsPerSecond = units / elapsed,
+        MeanUsPerUnit = elapsed * 1_000_000 / units, P50OperationUs = Percentile(.5), P95OperationUs = Percentile(.95), P99OperationUs = Percentile(.99),
+        RetainedSamples = retained, SampleEvery = sampleEvery, AllocatedBytes = allocated, BytesPerUnit = allocated / (double)units,
+        CpuMs = cpuMs, CpuUsPerUnit = cpuMs * 1000 / units, Gen0 = collected0, Gen1 = collected1, Gen2 = collected2
+    });
+    Console.WriteLine($"{name}: {units / elapsed:N0} units/s; {elapsed * 1_000_000 / units:F3} us/unit; {allocated / (double)units:F0} B/unit; samples={retained}");
+}
+
+static async Task Verify(Database db, int expectedRows)
+{
+    await using var result = await db.ExecuteAsync("SELECT COUNT(*), SUM(value) FROM bench");
+    var found = await result.ToListAsync();
+    long expectedSum = checked((long)expectedRows * (expectedRows + 1) / 2 * 10);
+    if (found.Count != 1 || found[0][0].AsInteger != expectedRows || found[0][1].AsInteger != expectedSum)
+        throw new InvalidOperationException("Row count/checksum/reopen verification failed.");
+}

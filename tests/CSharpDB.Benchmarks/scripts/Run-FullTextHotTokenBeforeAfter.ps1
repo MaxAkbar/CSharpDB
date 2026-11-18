@@ -266,7 +266,7 @@ function New-RunnerProject
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net11.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
@@ -448,7 +448,7 @@ function Build-Runner
     New-RunnerProject -RunnerDir $runnerDir -TargetRepo $TargetRepo
     $project = Join-Path $runnerDir "FtsHotTokenRunner.csproj"
     Invoke-Checked -FilePath $DotNet -ArgumentList @("build", $project, "-c", $Configuration, "--nologo") -WorkingDirectory $runnerDir -TimeoutSeconds 1800 | Out-Null
-    return Join-Path $runnerDir "bin\$Configuration\net10.0\FtsHotTokenRunner.dll"
+    return Join-Path $runnerDir "bin\$Configuration\net11.0\FtsHotTokenRunner.dll"
 }
 
 function Convert-JsonResultToRow

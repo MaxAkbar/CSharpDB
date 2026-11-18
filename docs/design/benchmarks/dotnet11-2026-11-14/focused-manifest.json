@@ -1,0 +1,128 @@
+{
+  "Date": "2026-11-14",
+  "Sdk": "11.0.100",
+  "CPU": {
+    "Name": "11th Gen Intel(R) Core(TM) i9-11900K @ 3.50GHz",
+    "NumberOfCores": 8,
+    "NumberOfLogicalProcessors": 16
+  },
+  "OS": {
+    "Caption": "Microsoft Windows 11 Pro",
+    "Version": "10.0.26300",
+    "TotalVisibleMemorySize": 100464544,
+    "FreePhysicalMemory": 71416324
+  },
+  "WarmupSeconds": 4,
+  "MeasuredSeconds": 20,
+  "Pairs": 3,
+  "Order": [
+    "net10.0",
+    "net11.0",
+    "net11.0",
+    "net10.0",
+    "net10.0",
+    "net11.0"
+  ],
+  "Switches": {
+    "DOTNET_gcServer": null,
+    "COMPlus_gcServer": null,
+    "DOTNET_ROLL_FORWARD": null,
+    "DOTNET_ReadyToRun": null,
+    "COMPlus_TieredPGO": null,
+    "COMPlus_TieredCompilation": null,
+    "DOTNET_TieredCompilation": null,
+    "DOTNET_GCHeapHardLimit": null,
+    "DOTNET_TieredPGO": null,
+    "COMPlus_ReadyToRun": null
+  },
+  "Artifacts": [
+    {
+      "Path": "C:\\Users\\maxim\\source\\Code\\CSharpDB\\.tmp\\dotnet11-benchmark-20261114\\durable-runner\\bin\\Release\\net10.0\\CSharpDB.Benchmarks.deps.json",
+      "Sha256": "4a4296d6530681fe76fec8c5e4fe5309821fbd18ab151744c5a8c6cc809e5416"
+    },
+    {
+      "Path": "C:\\Users\\maxim\\source\\Code\\CSharpDB\\.tmp\\dotnet11-benchmark-20261114\\durable-runner\\bin\\Release\\net10.0\\CSharpDB.Benchmarks.dll",
+      "Sha256": "37a7a47cc4b5a606bb886fb7fe56d7f776083b7d8bceb70629820791ba0c7c3a"
+    },
+    {
+      "Path": "C:\\Users\\maxim\\source\\Code\\CSharpDB\\.tmp\\dotnet11-benchmark-20261114\\durable-runner\\bin\\Release\\net10.0\\CSharpDB.Benchmarks.runtimeconfig.json",
+      "Sha256": "c230a317a54dd960bcbeb5f347f52e18dc665a26f7efda2159fced9a5ac7e097"
+    },
+    {
+      "Path": "C:\\Users\\maxim\\source\\Code\\CSharpDB\\.tmp\\dotnet11-benchmark-20261114\\durable-runner\\bin\\Release\\net10.0\\CSharpDB.Engine.dll",
+      "Sha256": "fd512e73b141b50190a449627f9ff886b2140b2b18bee561d8ab0db6d0dd0536"
+    },
+    {
+      "Path": "C:\\Users\\maxim\\source\\Code\\CSharpDB\\.tmp\\dotnet11-benchmark-20261114\\durable-runner\\bin\\Release\\net10.0\\CSharpDB.Execution.dll",
+      "Sha256": "ba86fb62bc23a03b8efdc06ebad82f47cb7074866d84786cd892f3b4365277b9"
+    },
+    {
+      "Path": "C:\\Users\\maxim\\source\\Code\\CSharpDB\\.tmp\\dotnet11-benchmark-20261114\\durable-runner\\bin\\Release\\net10.0\\CSharpDB.ImportExport.dll",
+      "Sha256": "74e0f60e4fd741f5961d5bba710699de72079d834e99eb92944f9cf434365aa5"
+    },
+    {
+      "Path": "C:\\Users\\maxim\\source\\Code\\CSharpDB\\.tmp\\dotnet11-benchmark-20261114\\durable-runner\\bin\\Release\\net10.0\\CSharpDB.Observability.dll",
+      "Sha256": "f7084364caedfc1252bfa7125aa774761b1dd4dbeda5d725b56bfd3b84ce7658"
+    },
+    {
+      "Path": "C:\\Users\\maxim\\source\\Code\\CSharpDB\\.tmp\\dotnet11-benchmark-20261114\\durable-runner\\bin\\Release\\net10.0\\CSharpDB.Primitives.dll",
+      "Sha256": "1a608a276c65e4b34350899bdcb95c5b8724a477ffc087d99dc87f0e85a71fee"
+    },
+    {
+      "Path": "C:\\Users\\maxim\\source\\Code\\CSharpDB\\.tmp\\dotnet11-benchmark-20261114\\durable-runner\\bin\\Release\\net10.0\\CSharpDB.Sql.dll",
+      "Sha256": "4677dbf762f2db544e160f23c9388236d3547e1a2262f39cdcca94cff1acca9d"
+    },
+    {
+      "Path": "C:\\Users\\maxim\\source\\Code\\CSharpDB\\.tmp\\dotnet11-benchmark-20261114\\durable-runner\\bin\\Release\\net10.0\\CSharpDB.Storage.Diagnostics.dll",
+      "Sha256": "b9b667ad990673bb1b47ff2e8a750eae3341efe6e027a98cebfcb60b54eb5f0c"
+    },
+    {
+      "Path": "C:\\Users\\maxim\\source\\Code\\CSharpDB\\.tmp\\dotnet11-benchmark-20261114\\durable-runner\\bin\\Release\\net10.0\\CSharpDB.Storage.dll",
+      "Sha256": "2f140a6a07f8c9f527548e1ed3a778625de7b9076b491c946726e2db2cad0109"
+    },
+    {
+      "Path": "C:\\Users\\maxim\\source\\Code\\CSharpDB\\.tmp\\dotnet11-benchmark-20261114\\durable-runner\\bin\\Release\\net11.0\\CSharpDB.Benchmarks.deps.json",
+      "Sha256": "efd36b0fac37cc9fed451abdcd3cc142d9de421c5a59e9bb051bd0552821ce64"
+    },
+    {
+      "Path": "C:\\Users\\maxim\\source\\Code\\CSharpDB\\.tmp\\dotnet11-benchmark-20261114\\durable-runner\\bin\\Release\\net11.0\\CSharpDB.Benchmarks.dll",
+      "Sha256": "f7534082cb0dfb5b29df9a7955aaac9c18c609f71a10659b71fc18fb5aafd4dd"
+    },
+    {
+      "Path": "C:\\Users\\maxim\\source\\Code\\CSharpDB\\.tmp\\dotnet11-benchmark-20261114\\durable-runner\\bin\\Release\\net11.0\\CSharpDB.Benchmarks.runtimeconfig.json",
+      "Sha256": "7baaa10dc21f2a7cf009e76de09f1a2f706cdfb2139af15629791d7d2cb7fd4f"
+    },
+    {
+      "Path": "C:\\Users\\maxim\\source\\Code\\CSharpDB\\.tmp\\dotnet11-benchmark-20261114\\durable-runner\\bin\\Release\\net11.0\\CSharpDB.Engine.dll",
+      "Sha256": "506141fdf29ba9835f3966a9be1416b740ab9aad3d805e1c9a4183d299add310"
+    },
+    {
+      "Path": "C:\\Users\\maxim\\source\\Code\\CSharpDB\\.tmp\\dotnet11-benchmark-20261114\\durable-runner\\bin\\Release\\net11.0\\CSharpDB.Execution.dll",
+      "Sha256": "7d476a979a928907450805cd3108206479b5af672dcc678b44f7ca525900bf4f"
+    },
+    {
+      "Path": "C:\\Users\\maxim\\source\\Code\\CSharpDB\\.tmp\\dotnet11-benchmark-20261114\\durable-runner\\bin\\Release\\net11.0\\CSharpDB.ImportExport.dll",
+      "Sha256": "6691b7cd9cc5c08341076284a911bcbcf56d8801137ec34a70befa8f584c3370"
+    },
+    {
+      "Path": "C:\\Users\\maxim\\source\\Code\\CSharpDB\\.tmp\\dotnet11-benchmark-20261114\\durable-runner\\bin\\Release\\net11.0\\CSharpDB.Observability.dll",
+      "Sha256": "5597d443bf373b113e9d28787f685390007652aa2f13668fefc37c0686b26bfe"
+    },
+    {
+      "Path": "C:\\Users\\maxim\\source\\Code\\CSharpDB\\.tmp\\dotnet11-benchmark-20261114\\durable-runner\\bin\\Release\\net11.0\\CSharpDB.Primitives.dll",
+      "Sha256": "6745cb9abf8771eec302a7b78738c7434808dc1a3ae788d1fe2d77184a77c64b"
+    },
+    {
+      "Path": "C:\\Users\\maxim\\source\\Code\\CSharpDB\\.tmp\\dotnet11-benchmark-20261114\\durable-runner\\bin\\Release\\net11.0\\CSharpDB.Sql.dll",
+      "Sha256": "8226dc5014fcd4362311e9281a1de5c099a03c54d4dc7e902e94794235ecdcd8"
+    },
+    {
+      "Path": "C:\\Users\\maxim\\source\\Code\\CSharpDB\\.tmp\\dotnet11-benchmark-20261114\\durable-runner\\bin\\Release\\net11.0\\CSharpDB.Storage.Diagnostics.dll",
+      "Sha256": "21462004c55fa56d8947d3b81f485659f31acad6837a35cb3e0e976e6bc8527f"
+    },
+    {
+      "Path": "C:\\Users\\maxim\\source\\Code\\CSharpDB\\.tmp\\dotnet11-benchmark-20261114\\durable-runner\\bin\\Release\\net11.0\\CSharpDB.Storage.dll",
+      "Sha256": "228bf9bba17eec6de14c30acbd7b850f0577d1929caa30f3b164548d2067bbe5"
+    }
+  ]
+}

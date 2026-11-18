@@ -77,7 +77,7 @@ body:
     attributes:
       label: Environment
       description: OS + .NET version.
-      placeholder: "Windows 11, .NET 10.0.x"
+      placeholder: "Windows 11, .NET 11.0.x"
 
   - type: checkboxes
     id: checks

@@ -232,7 +232,7 @@ if ($unexpectedDependencies.Count -ne 0) {
 }
 
 foreach ($requiredEntry in @(
-    'lib/net10.0/CSharpDB.Observability.dll',
+    'lib/net11.0/CSharpDB.Observability.dll',
     'README.md',
     'icon.png'
 )) {

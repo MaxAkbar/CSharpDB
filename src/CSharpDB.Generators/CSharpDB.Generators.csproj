@@ -14,7 +14,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Pinned to Roslyn 5.9.0 to match the SDK version pinned in global.json (10.0.401); newer Roslyn versions cause the analyzer to be skipped (CS9057). -->
+    <!-- Stay below the Roslyn 5.12 compiler in the .NET 11 SDK. The analyzer
+         targets netstandard2.0 so compiler hosts can load it. -->
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.9.0" PrivateAssets="all" />
     <PackageReference Include="Microsoft.CodeAnalysis.Analyzers" Version="5.9.0" PrivateAssets="all" />
     <PackageReference Include="System.Text.Json" Version="10.0.14" PrivateAssets="all" />

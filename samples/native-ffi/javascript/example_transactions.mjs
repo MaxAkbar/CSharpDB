@@ -24,7 +24,7 @@ const LIB_PATH =
     __dirname,
     "..", "..", "..", "..",
     "src", "CSharpDB.Native", "bin", "Release",
-    "net10.0", "win-x64", "publish", "CSharpDB.Native.dll"
+    "net11.0", "win-x64", "publish", "CSharpDB.Native.dll"
   );
 
 const DB_FILE = "tutorial_transactions.db";

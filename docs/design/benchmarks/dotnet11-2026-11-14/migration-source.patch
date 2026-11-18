@@ -1,0 +1,1304 @@
+diff --git a/src/CSharpDB.Admin.Desktop/AdminHostProcess.cs b/src/CSharpDB.Admin.Desktop/AdminHostProcess.cs
+index 0a7d777e..7414caab 100644
+--- a/src/CSharpDB.Admin.Desktop/AdminHostProcess.cs
++++ b/src/CSharpDB.Admin.Desktop/AdminHostProcess.cs
+@@ -12,7 +12,7 @@ internal sealed class AdminHostProcess : IAsyncDisposable
+     private const string AdminExecutableName = "CSharpDB.Admin.exe";
+     private const string AdminExecutableEnvironmentVariable = "CSHARPDB_ADMIN_EXE";
+     private const string DesktopShellTokenHeaderName = "X-CSharpDB-Desktop-Shell-Token";
+-    private const string AdminTargetFramework = "net10.0";
++    private const string AdminTargetFramework = "net11.0";
+ 
+ #if DEBUG
+     private const string BuildConfiguration = "Debug";
+diff --git a/src/CSharpDB.Admin.Desktop/CSharpDB.Admin.Desktop.csproj b/src/CSharpDB.Admin.Desktop/CSharpDB.Admin.Desktop.csproj
+index 0767a8fb..705fbf1d 100644
+--- a/src/CSharpDB.Admin.Desktop/CSharpDB.Admin.Desktop.csproj
++++ b/src/CSharpDB.Admin.Desktop/CSharpDB.Admin.Desktop.csproj
+@@ -2,7 +2,7 @@
+ 
+   <PropertyGroup>
+     <OutputType>WinExe</OutputType>
+-    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
++    <TargetFramework>net11.0-windows10.0.19041.0</TargetFramework>
+     <UseWPF>true</UseWPF>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+diff --git a/src/CSharpDB.Admin.Forms.Web/CSharpDB.Admin.Forms.Web.csproj b/src/CSharpDB.Admin.Forms.Web/CSharpDB.Admin.Forms.Web.csproj
+index 43dc2a3f..1e4ada29 100644
+--- a/src/CSharpDB.Admin.Forms.Web/CSharpDB.Admin.Forms.Web.csproj
++++ b/src/CSharpDB.Admin.Forms.Web/CSharpDB.Admin.Forms.Web.csproj
+@@ -1,7 +1,7 @@
+ <Project Sdk="Microsoft.NET.Sdk.Web">
+ 
+   <PropertyGroup>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <RootNamespace>CSharpDB.Admin.Forms.Web</RootNamespace>
+diff --git a/src/CSharpDB.Admin.Forms.Web/README.md b/src/CSharpDB.Admin.Forms.Web/README.md
+index 4265062b..d98c9580 100644
+--- a/src/CSharpDB.Admin.Forms.Web/README.md
++++ b/src/CSharpDB.Admin.Forms.Web/README.md
+@@ -45,7 +45,7 @@ The host does not create forms. The target database must already contain them.
+ For example, the Fulfillment Hub sample seeds forms into:
+ 
+ ```text
+-samples/fulfillment-hub/bin/Debug/net10.0/fulfillment-hub-demo.db
++samples/fulfillment-hub/bin/Debug/net11.0/fulfillment-hub-demo.db
+ ```
+ 
+ ## Configuration
+@@ -93,7 +93,7 @@ dotnet run --project src/CSharpDB.Admin.Forms.Web/CSharpDB.Admin.Forms.Web.cspro
+ Run against the Fulfillment Hub sample database on an explicit local URL:
+ 
+ ```powershell
+-dotnet run --project src/CSharpDB.Admin.Forms.Web/CSharpDB.Admin.Forms.Web.csproj -- --urls http://127.0.0.1:5095 --CSharpDB:DataSource=./samples/fulfillment-hub/bin/Debug/net10.0/fulfillment-hub-demo.db
++dotnet run --project src/CSharpDB.Admin.Forms.Web/CSharpDB.Admin.Forms.Web.csproj -- --urls http://127.0.0.1:5095 --CSharpDB:DataSource=./samples/fulfillment-hub/bin/Debug/net11.0/fulfillment-hub-demo.db
+ ```
+ 
+ After startup:
+diff --git a/src/CSharpDB.Admin.Forms/CSharpDB.Admin.Forms.csproj b/src/CSharpDB.Admin.Forms/CSharpDB.Admin.Forms.csproj
+index c9e88ff8..8d027f71 100644
+--- a/src/CSharpDB.Admin.Forms/CSharpDB.Admin.Forms.csproj
++++ b/src/CSharpDB.Admin.Forms/CSharpDB.Admin.Forms.csproj
+@@ -1,7 +1,7 @@
+ <Project Sdk="Microsoft.NET.Sdk.Razor">
+ 
+   <PropertyGroup>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <RootNamespace>CSharpDB.Admin.Forms</RootNamespace>
+diff --git a/src/CSharpDB.Admin.Forms/Evaluation/FormulaEvaluator.cs b/src/CSharpDB.Admin.Forms/Evaluation/FormulaEvaluator.cs
+index 75c1100d..f38d1ebb 100644
+--- a/src/CSharpDB.Admin.Forms/Evaluation/FormulaEvaluator.cs
++++ b/src/CSharpDB.Admin.Forms/Evaluation/FormulaEvaluator.cs
+@@ -1034,7 +1034,12 @@ public static class FormulaEvaluator
+             digits = (int)parsedDigits;
+         }
+ 
+-        return Math.Round(value, digits, MidpointRounding.ToEven);
++        // Access-style Round retains the scale/round/unscale behavior used
++        // before .NET 11 corrected Math.Round(double, digits).
++        if (Math.Abs(value) >= 1e16)
++            return value;
++        double factor = Math.Pow(10, digits);
++        return Math.Round(value * factor, MidpointRounding.ToEven) / factor;
+     }
+ 
+     private static object? EvaluateDomainFunction(
+diff --git a/src/CSharpDB.Admin.Forms/Models/FormControlValueConverter.cs b/src/CSharpDB.Admin.Forms/Models/FormControlValueConverter.cs
+index 15f711e2..f0cce624 100644
+--- a/src/CSharpDB.Admin.Forms/Models/FormControlValueConverter.cs
++++ b/src/CSharpDB.Admin.Forms/Models/FormControlValueConverter.cs
+@@ -130,8 +130,11 @@ public static class FormControlValueConverter
+             case sbyte or byte or short or ushort or int or uint or long or ulong:
+                 result = Convert.ToDecimal(value, CultureInfo.InvariantCulture);
+                 return true;
+-            case float or double:
+-                result = Convert.ToDecimal(value, CultureInfo.InvariantCulture);
++            case double real:
++                result = CSharpDB.Primitives.CSharpDbDecimalCodec.FromDouble(real);
++                return true;
++            case float real:
++                result = CSharpDB.Primitives.CSharpDbDecimalCodec.FromSingle(real);
+                 return true;
+             case string text:
+                 return TryConvertTextToDecimal(text, out result);
+diff --git a/src/CSharpDB.Admin.ImportExport/CSharpDB.Admin.ImportExport.csproj b/src/CSharpDB.Admin.ImportExport/CSharpDB.Admin.ImportExport.csproj
+index c1de8e64..422fea03 100644
+--- a/src/CSharpDB.Admin.ImportExport/CSharpDB.Admin.ImportExport.csproj
++++ b/src/CSharpDB.Admin.ImportExport/CSharpDB.Admin.ImportExport.csproj
+@@ -1,7 +1,7 @@
+ <Project Sdk="Microsoft.NET.Sdk.Razor">
+ 
+   <PropertyGroup>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <RootNamespace>CSharpDB.Admin.ImportExport</RootNamespace>
+diff --git a/src/CSharpDB.Admin.ImportExport/Services/TableImportExportService.cs b/src/CSharpDB.Admin.ImportExport/Services/TableImportExportService.cs
+index 7c1f64c2..1f869edb 100644
+--- a/src/CSharpDB.Admin.ImportExport/Services/TableImportExportService.cs
++++ b/src/CSharpDB.Admin.ImportExport/Services/TableImportExportService.cs
+@@ -946,7 +946,12 @@ public sealed class TableImportExportService(
+         {
+             PrimitiveDbType.Integer => PrimitiveDbValue.FromInteger(Convert.ToInt64(value, CultureInfo.InvariantCulture)),
+             PrimitiveDbType.Real => PrimitiveDbValue.FromReal(Convert.ToDouble(value, CultureInfo.InvariantCulture)),
+-            PrimitiveDbType.Decimal => PrimitiveDbValue.FromDecimal(Convert.ToDecimal(value, CultureInfo.InvariantCulture)),
++            PrimitiveDbType.Decimal => PrimitiveDbValue.FromDecimal(value switch
++            {
++                double real => CSharpDB.Primitives.CSharpDbDecimalCodec.FromDouble(real),
++                float real => CSharpDB.Primitives.CSharpDbDecimalCodec.FromSingle(real),
++                _ => Convert.ToDecimal(value, CultureInfo.InvariantCulture),
++            }),
+             PrimitiveDbType.Text => PrimitiveDbValue.FromText(Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty),
+             PrimitiveDbType.Blob => PrimitiveDbValue.FromBlob(ConvertToBytes(value)),
+             _ => throw new InvalidOperationException($"Unsupported column type '{columnType}'."),
+diff --git a/src/CSharpDB.Admin.Reports/CSharpDB.Admin.Reports.csproj b/src/CSharpDB.Admin.Reports/CSharpDB.Admin.Reports.csproj
+index 56136941..23b1af23 100644
+--- a/src/CSharpDB.Admin.Reports/CSharpDB.Admin.Reports.csproj
++++ b/src/CSharpDB.Admin.Reports/CSharpDB.Admin.Reports.csproj
+@@ -1,7 +1,7 @@
+ <Project Sdk="Microsoft.NET.Sdk.Razor">
+ 
+   <PropertyGroup>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <RootNamespace>CSharpDB.Admin.Reports</RootNamespace>
+diff --git a/src/CSharpDB.Admin/CSharpDB.Admin.csproj b/src/CSharpDB.Admin/CSharpDB.Admin.csproj
+index 88825955..a787dc4a 100644
+--- a/src/CSharpDB.Admin/CSharpDB.Admin.csproj
++++ b/src/CSharpDB.Admin/CSharpDB.Admin.csproj
+@@ -1,7 +1,7 @@
+ <Project Sdk="Microsoft.NET.Sdk.Web">
+ 
+   <PropertyGroup>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <RootNamespace>CSharpDB.Admin</RootNamespace>
+diff --git a/src/CSharpDB.Api/CSharpDB.Api.csproj b/src/CSharpDB.Api/CSharpDB.Api.csproj
+index 60245967..84183337 100644
+--- a/src/CSharpDB.Api/CSharpDB.Api.csproj
++++ b/src/CSharpDB.Api/CSharpDB.Api.csproj
+@@ -1,7 +1,7 @@
+ <Project Sdk="Microsoft.NET.Sdk.Web">
+ 
+   <PropertyGroup>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <RootNamespace>CSharpDB.Api</RootNamespace>
+@@ -9,9 +9,9 @@
+   </PropertyGroup>
+ 
+   <ItemGroup>
+-    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.14" />
+-    <!-- Microsoft.AspNetCore.OpenApi 10.0.14 requires Microsoft.OpenApi >= 2.12.2 and < 3.0.0 for generated XML comment support. -->
+-    <PackageReference Include="Microsoft.OpenApi" Version="2.13.0" />
++    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="11.0.0" />
++    <!-- Keep the document model compatible with ASP.NET Core 11's OpenAPI generator. -->
++    <PackageReference Include="Microsoft.OpenApi" Version="3.11.0" />
+     <PackageReference Include="OpenTelemetry.Exporter.Console" Version="1.20.1" />
+     <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.20.1" />
+     <!-- Keep the prerelease Prometheus exporter aligned with the OpenTelemetry SDK; histogram serialization uses SDK internals. -->
+diff --git a/src/CSharpDB.Cli/CSharpDB.Cli.csproj b/src/CSharpDB.Cli/CSharpDB.Cli.csproj
+index dc2d365f..b622da91 100644
+--- a/src/CSharpDB.Cli/CSharpDB.Cli.csproj
++++ b/src/CSharpDB.Cli/CSharpDB.Cli.csproj
+@@ -2,7 +2,7 @@
+ 
+   <PropertyGroup>
+     <OutputType>Exe</OutputType>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <RootNamespace>CSharpDB.Cli</RootNamespace>
+diff --git a/src/CSharpDB.Client/CSharpDB.Client.csproj b/src/CSharpDB.Client/CSharpDB.Client.csproj
+index 5db7f3e3..a229e7fd 100644
+--- a/src/CSharpDB.Client/CSharpDB.Client.csproj
++++ b/src/CSharpDB.Client/CSharpDB.Client.csproj
+@@ -1,7 +1,7 @@
+ <Project Sdk="Microsoft.NET.Sdk">
+ 
+   <PropertyGroup>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <RootNamespace>CSharpDB.Client</RootNamespace>
+@@ -33,8 +33,6 @@
+       <PrivateAssets>all</PrivateAssets>
+       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+     </PackageReference>
+-    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.14" />
+-    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.14" />
+   </ItemGroup>
+ 
+   <ItemGroup>
+diff --git a/src/CSharpDB.Client/Internal/EngineTransportClient.ProcedureHelpers.cs b/src/CSharpDB.Client/Internal/EngineTransportClient.ProcedureHelpers.cs
+index 709016db..4a0799e0 100644
+--- a/src/CSharpDB.Client/Internal/EngineTransportClient.ProcedureHelpers.cs
++++ b/src/CSharpDB.Client/Internal/EngineTransportClient.ProcedureHelpers.cs
+@@ -409,8 +409,8 @@ internal sealed partial class EngineTransportClient
+             case decimal number: result = number; return true;
+             case long integer: result = integer; return true;
+             case int integer: result = integer; return true;
+-            case double real when double.IsFinite(real): result = checked((decimal)real); return true;
+-            case float real when float.IsFinite(real): result = checked((decimal)real); return true;
++            case double real when double.IsFinite(real): result = CSharpDB.Primitives.CSharpDbDecimalCodec.FromDouble(real); return true;
++            case float real when float.IsFinite(real): result = CSharpDB.Primitives.CSharpDbDecimalCodec.FromSingle(real); return true;
+             case string text when decimal.TryParse(
+                 text,
+                 NumberStyles.Number,
+diff --git a/src/CSharpDB.Client/Pipelines/CSharpDbPipelineComponents.cs b/src/CSharpDB.Client/Pipelines/CSharpDbPipelineComponents.cs
+index d8904cd7..ffe98262 100644
+--- a/src/CSharpDB.Client/Pipelines/CSharpDbPipelineComponents.cs
++++ b/src/CSharpDB.Client/Pipelines/CSharpDbPipelineComponents.cs
+@@ -377,6 +377,8 @@ internal sealed class CSharpDbTablePipelineDestination : IPipelineDestination
+             DbType.Decimal => value switch
+             {
+                 decimal decimalValue => decimalValue,
++                double real => CSharpDB.Primitives.CSharpDbDecimalCodec.FromDouble(real),
++                float real => CSharpDB.Primitives.CSharpDbDecimalCodec.FromSingle(real),
+                 _ => Convert.ToDecimal(value, CultureInfo.InvariantCulture),
+             },
+             DbType.Text => value switch
+diff --git a/src/CSharpDB.CodeModules/CSharpDB.CodeModules.csproj b/src/CSharpDB.CodeModules/CSharpDB.CodeModules.csproj
+index 8949805d..b6782dc3 100644
+--- a/src/CSharpDB.CodeModules/CSharpDB.CodeModules.csproj
++++ b/src/CSharpDB.CodeModules/CSharpDB.CodeModules.csproj
+@@ -1,7 +1,7 @@
+ <Project Sdk="Microsoft.NET.Sdk">
+ 
+   <PropertyGroup>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <RootNamespace>CSharpDB.CodeModules</RootNamespace>
+@@ -16,7 +16,6 @@
+ 
+   <ItemGroup>
+     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.9.0" />
+-    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.14" />
+   </ItemGroup>
+ 
+ </Project>
+diff --git a/src/CSharpDB.Daemon/CSharpDB.Daemon.csproj b/src/CSharpDB.Daemon/CSharpDB.Daemon.csproj
+index 5a963d74..f6e3a1f9 100644
+--- a/src/CSharpDB.Daemon/CSharpDB.Daemon.csproj
++++ b/src/CSharpDB.Daemon/CSharpDB.Daemon.csproj
+@@ -1,7 +1,7 @@
+ <Project Sdk="Microsoft.NET.Sdk.Web">
+ 
+   <PropertyGroup>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <RootNamespace>CSharpDB.Daemon</RootNamespace>
+@@ -12,8 +12,8 @@
+     <PackageReference Include="Grpc.AspNetCore.Web" Version="2.80.0" />
+     <PackageReference Include="Grpc.AspNetCore" Version="2.80.0" />
+     <PackageReference Include="Grpc.AspNetCore.HealthChecks" Version="2.80.0" />
+-    <PackageReference Include="Microsoft.Extensions.Hosting.Systemd" Version="10.0.10" />
+-    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.10" />
++    <PackageReference Include="Microsoft.Extensions.Hosting.Systemd" Version="11.0.0" />
++    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="11.0.0" />
+   </ItemGroup>
+ 
+   <ItemGroup>
+diff --git a/src/CSharpDB.Daemon/README.md b/src/CSharpDB.Daemon/README.md
+index ab663013..022c94e6 100644
+--- a/src/CSharpDB.Daemon/README.md
++++ b/src/CSharpDB.Daemon/README.md
+@@ -165,7 +165,7 @@ For best remote performance:
+ 
+ ## Requirements
+ 
+-- .NET SDK 10.0 or newer to build from source
++- .NET SDK 11.0 or newer to build from source
+ - no .NET SDK requirement when using the self-contained release archives
+ - a filesystem location where the daemon can create and update:
+   - `*.db`
+diff --git a/src/CSharpDB.Data/CSharpDB.Data.csproj b/src/CSharpDB.Data/CSharpDB.Data.csproj
+index 1ecc92bb..918317fe 100644
+--- a/src/CSharpDB.Data/CSharpDB.Data.csproj
++++ b/src/CSharpDB.Data/CSharpDB.Data.csproj
+@@ -1,7 +1,7 @@
+ <Project Sdk="Microsoft.NET.Sdk">
+ 
+   <PropertyGroup>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <Description>ADO.NET provider for CSharpDB. Standard DbConnection, DbCommand, and DbDataReader with parameterized queries and transactions.</Description>
+diff --git a/src/CSharpDB.Data/README.md b/src/CSharpDB.Data/README.md
+index 319de07b..cb7b469c 100644
+--- a/src/CSharpDB.Data/README.md
++++ b/src/CSharpDB.Data/README.md
+@@ -3,7 +3,7 @@
+ ADO.NET provider for the [CSharpDB](https://github.com/MaxAkbar/CSharpDB) embedded database engine. Standard `DbConnection`, `DbCommand`, and `DbDataReader` with parameterized queries and transactions.
+ 
+ [![NuGet](https://img.shields.io/nuget/v/CSharpDB.Data)](https://www.nuget.org/packages/CSharpDB.Data)
+-[![.NET 10](https://img.shields.io/badge/.NET-10-512bd4)](https://dotnet.microsoft.com/download/dotnet/10.0)
++[![.NET 11](https://img.shields.io/badge/.NET-11-512bd4)](https://dotnet.microsoft.com/download/dotnet/11.0)
+ [![Release](https://img.shields.io/github/v/release/MaxAkbar/CSharpDB?display_name=tag&label=Release)](https://github.com/MaxAkbar/CSharpDB/releases/latest)
+ [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/MaxAkbar/CSharpDB/blob/main/LICENSE)
+ 
+diff --git a/src/CSharpDB.Data/SqlParameterBinder.cs b/src/CSharpDB.Data/SqlParameterBinder.cs
+index 841bdd65..bf699af2 100644
+--- a/src/CSharpDB.Data/SqlParameterBinder.cs
++++ b/src/CSharpDB.Data/SqlParameterBinder.cs
+@@ -94,9 +94,13 @@ internal static class SqlParameterBinder
+         decimal decimalValue;
+         try
+         {
+-            decimalValue = value is decimal exact
+-                ? exact
+-                : Convert.ToDecimal(value, CultureInfo.InvariantCulture);
++            decimalValue = value switch
++            {
++                decimal exact => exact,
++                double real => CSharpDbDecimalCodec.FromDouble(real),
++                float real => CSharpDbDecimalCodec.FromSingle(real),
++                _ => Convert.ToDecimal(value, CultureInfo.InvariantCulture),
++            };
+         }
+         catch (Exception ex) when (ex is FormatException or InvalidCastException or OverflowException)
+         {
+diff --git a/src/CSharpDB.Data/TypeMapper.cs b/src/CSharpDB.Data/TypeMapper.cs
+index a257f2bb..a8ed659d 100644
+--- a/src/CSharpDB.Data/TypeMapper.cs
++++ b/src/CSharpDB.Data/TypeMapper.cs
+@@ -162,7 +162,7 @@ internal static class TypeMapper
+     {
+         CoreDbType.Decimal => value.AsDecimal,
+         CoreDbType.Integer => value.AsInteger,
+-        CoreDbType.Real => checked((decimal)value.AsReal),
++        CoreDbType.Real => CSharpDbDecimalCodec.FromDouble(value.AsReal),
+         _ => throw new InvalidOperationException($"Cannot read {value.Type} as Decimal."),
+     };
+ 
+diff --git a/src/CSharpDB.DataGeneration/CSharpDB.DataGeneration.csproj b/src/CSharpDB.DataGeneration/CSharpDB.DataGeneration.csproj
+index 9766f89c..e842b3c3 100644
+--- a/src/CSharpDB.DataGeneration/CSharpDB.DataGeneration.csproj
++++ b/src/CSharpDB.DataGeneration/CSharpDB.DataGeneration.csproj
+@@ -1,6 +1,6 @@
+ <Project Sdk="Microsoft.NET.Sdk">
+   <PropertyGroup>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <IsPackable>false</IsPackable>
+diff --git a/src/CSharpDB.DataGeneration/GeneratorCatalog.cs b/src/CSharpDB.DataGeneration/GeneratorCatalog.cs
+index e846d512..ec74fd72 100644
+--- a/src/CSharpDB.DataGeneration/GeneratorCatalog.cs
++++ b/src/CSharpDB.DataGeneration/GeneratorCatalog.cs
+@@ -147,7 +147,7 @@ public static class GeneratorCatalog
+             else if (column.Type == DbType.Integer)
+                 return random.NextInclusive(checked((long)decimal.Ceiling(rule.Minimum)), checked((long)decimal.Floor(rule.Maximum)));
+             else if (column.Type == DbType.Decimal)
+-                return decimal.Round(rule.Minimum + (decimal)random.NextDouble() * (rule.Maximum - rule.Minimum), column.EffectiveType.Scale ?? 2);
++                return decimal.Round(rule.Minimum + CSharpDbDecimalCodec.FromDouble(random.NextDouble()) * (rule.Maximum - rule.Minimum), column.EffectiveType.Scale ?? 2);
+             else expression = new { op = "double", min = rule.Minimum, max = rule.Maximum, digits = 2 };
+         }
+         else if (rule.Generator == FieldGenerator.ValueList)
+@@ -193,7 +193,7 @@ public static class GeneratorCatalog
+         var table = new SqlTableSpec { GeneratorKey = tableId, Name = schema.TableName,
+             Columns = [new SqlColumnSpec { Name = columnId, Generator = JsonSerializer.SerializeToElement(expression) }] };
+         object? result = SpecDataGenerator.GenerateRow(new GenerationOptions { Seed = profile.Seed, ReferenceUtc = profile.ReferenceUtc, Locale = profile.Locale }, table, ordinal)[columnId];
+-        if (column.Type == DbType.Decimal && result is double real) return decimal.Round((decimal)real, column.EffectiveType.Scale ?? 2);
++        if (column.Type == DbType.Decimal && result is double real) return decimal.Round(CSharpDbDecimalCodec.FromDouble(real), column.EffectiveType.Scale ?? 2);
+         if (column.Type == DbType.Integer && result is double integer) return checked((long)Math.Round(integer));
+         // Text generation is explicitly sized; typed constants and lists are validated without truncation.
+         if (rule.Generator == FieldGenerator.Email && result is string email)
+diff --git a/src/CSharpDB.DataGeneration/README.md b/src/CSharpDB.DataGeneration/README.md
+index 7dfaca1e..e54b1afe 100644
+--- a/src/CSharpDB.DataGeneration/README.md
++++ b/src/CSharpDB.DataGeneration/README.md
+@@ -3,7 +3,7 @@
+ Repeatable test-data generation and relationship-aware schema planning for the
+ [CSharpDB](https://github.com/MaxAkbar/CSharpDB) embedded database engine.
+ 
+-[![.NET 10](https://img.shields.io/badge/.NET-10-512bd4)](https://dotnet.microsoft.com/download/dotnet/10.0)
++[![.NET 11](https://img.shields.io/badge/.NET-11-512bd4)](https://dotnet.microsoft.com/download/dotnet/11.0)
+ [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/MaxAkbar/CSharpDB/blob/main/LICENSE)
+ 
+ ## Overview
+diff --git a/src/CSharpDB.DataPrivacy/CSharpDB.DataPrivacy.csproj b/src/CSharpDB.DataPrivacy/CSharpDB.DataPrivacy.csproj
+index b0761c5b..c263dd97 100644
+--- a/src/CSharpDB.DataPrivacy/CSharpDB.DataPrivacy.csproj
++++ b/src/CSharpDB.DataPrivacy/CSharpDB.DataPrivacy.csproj
+@@ -1,6 +1,6 @@
+ <Project Sdk="Microsoft.NET.Sdk">
+   <PropertyGroup>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <IsPackable>false</IsPackable>
+diff --git a/src/CSharpDB.DevOps/CSharpDB.DevOps.csproj b/src/CSharpDB.DevOps/CSharpDB.DevOps.csproj
+index aff9c790..56045ba1 100644
+--- a/src/CSharpDB.DevOps/CSharpDB.DevOps.csproj
++++ b/src/CSharpDB.DevOps/CSharpDB.DevOps.csproj
+@@ -1,7 +1,7 @@
+ <Project Sdk="Microsoft.NET.Sdk">
+ 
+   <PropertyGroup>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <Description>Database DevOps compare and deploy services for CSharpDB.</Description>
+diff --git a/src/CSharpDB.Engine/CSharpDB.Engine.csproj b/src/CSharpDB.Engine/CSharpDB.Engine.csproj
+index 66ba0074..f472e395 100644
+--- a/src/CSharpDB.Engine/CSharpDB.Engine.csproj
++++ b/src/CSharpDB.Engine/CSharpDB.Engine.csproj
+@@ -20,7 +20,7 @@
+   </ItemGroup>
+ 
+   <PropertyGroup>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <Description>Lightweight embedded SQL database engine for .NET. Single-file storage, WAL durability, concurrent readers, and a typed Collection&lt;T&gt; NoSQL API.</Description>
+diff --git a/src/CSharpDB.Engine/README.md b/src/CSharpDB.Engine/README.md
+index b8592a30..2b4b52a0 100644
+--- a/src/CSharpDB.Engine/README.md
++++ b/src/CSharpDB.Engine/README.md
+@@ -3,7 +3,7 @@
+ Lightweight embedded SQL database engine for .NET with single-file storage, WAL durability, concurrent readers, and a typed `Collection<T>` NoSQL API.
+ 
+ [![NuGet](https://img.shields.io/nuget/v/CSharpDB.Engine)](https://www.nuget.org/packages/CSharpDB.Engine)
+-[![.NET 10](https://img.shields.io/badge/.NET-10-512bd4)](https://dotnet.microsoft.com/download/dotnet/10.0)
++[![.NET 11](https://img.shields.io/badge/.NET-11-512bd4)](https://dotnet.microsoft.com/download/dotnet/11.0)
+ [![Release](https://img.shields.io/github/v/release/MaxAkbar/CSharpDB?display_name=tag&label=Release)](https://github.com/MaxAkbar/CSharpDB/releases/latest)
+ [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/MaxAkbar/CSharpDB/blob/main/LICENSE)
+ 
+diff --git a/src/CSharpDB.EntityFrameworkCore.Tools/CSharpDB.EntityFrameworkCore.Tools.csproj b/src/CSharpDB.EntityFrameworkCore.Tools/CSharpDB.EntityFrameworkCore.Tools.csproj
+index 3e6c67a1..9d0aa920 100644
+--- a/src/CSharpDB.EntityFrameworkCore.Tools/CSharpDB.EntityFrameworkCore.Tools.csproj
++++ b/src/CSharpDB.EntityFrameworkCore.Tools/CSharpDB.EntityFrameworkCore.Tools.csproj
+@@ -2,7 +2,7 @@
+ 
+   <PropertyGroup>
+     <OutputType>Exe</OutputType>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <AssemblyName>dotnet-csharpdb-ef</AssemblyName>
+diff --git a/src/CSharpDB.EntityFrameworkCore.Tools/EfCoreAnalyzeCommandRunner.cs b/src/CSharpDB.EntityFrameworkCore.Tools/EfCoreAnalyzeCommandRunner.cs
+index 63f780b4..4936904b 100644
+--- a/src/CSharpDB.EntityFrameworkCore.Tools/EfCoreAnalyzeCommandRunner.cs
++++ b/src/CSharpDB.EntityFrameworkCore.Tools/EfCoreAnalyzeCommandRunner.cs
+@@ -409,7 +409,7 @@ internal static class EfCoreAnalyzeCommandRunner
+             EfCoreWorkerClientStatus.ProjectIncompatible =>
+                 (
+                     "CSHARPDB-EF-PROJECT-003",
+-                    "The project must target only net10.0."),
++                    "The project must target only net11.0."),
+             EfCoreWorkerClientStatus.BuildFailed =>
+                 (
+                     "CSHARPDB-EF-BUILD-001",
+diff --git a/src/CSharpDB.EntityFrameworkCore.Tools/EfCoreWorkerClient.cs b/src/CSharpDB.EntityFrameworkCore.Tools/EfCoreWorkerClient.cs
+index d8b62178..1d36d42c 100644
+--- a/src/CSharpDB.EntityFrameworkCore.Tools/EfCoreWorkerClient.cs
++++ b/src/CSharpDB.EntityFrameworkCore.Tools/EfCoreWorkerClient.cs
+@@ -245,7 +245,7 @@ internal static class EfCoreWorkerClient
+                     "-c",
+                     "Debug",
+                     "--framework",
+-                    "net10.0",
++                    "net11.0",
+                     "--no-restore",
+                     "--nologo",
+                     "--verbosity",
+@@ -662,7 +662,7 @@ internal static class EfCoreWorkerClient
+         {
+             return string.Equals(
+                 properties.TargetFramework,
+-                "net10.0",
++                "net11.0",
+                 StringComparison.Ordinal);
+         }
+ 
+@@ -673,11 +673,11 @@ internal static class EfCoreWorkerClient
+         return frameworks.Length == 1 &&
+             string.Equals(
+                 frameworks[0],
+-                "net10.0",
++                "net11.0",
+                 StringComparison.Ordinal) &&
+             string.Equals(
+                 properties.TargetFramework,
+-                "net10.0",
++                "net11.0",
+                 StringComparison.Ordinal);
+     }
+ 
+diff --git a/src/CSharpDB.EntityFrameworkCore.Tools/README.md b/src/CSharpDB.EntityFrameworkCore.Tools/README.md
+index bf9fbcb2..31496bc7 100644
+--- a/src/CSharpDB.EntityFrameworkCore.Tools/README.md
++++ b/src/CSharpDB.EntityFrameworkCore.Tools/README.md
+@@ -28,7 +28,7 @@ dotnet csharpdb-ef analyze `
+ 
+ Use `--format json` for a deterministic machine-readable report.
+ 
+-The current contract accepts one restored, single-target `net10.0` project and
++The current contract accepts one restored, single-target `net11.0` project and
+ builds its Debug output with `--no-restore`. The context may be specified by
+ its fully qualified name or by a unique simple name.
+ 
+diff --git a/src/CSharpDB.EntityFrameworkCore/CSharpDB.EntityFrameworkCore.csproj b/src/CSharpDB.EntityFrameworkCore/CSharpDB.EntityFrameworkCore.csproj
+index c096fca7..3a6a101d 100644
+--- a/src/CSharpDB.EntityFrameworkCore/CSharpDB.EntityFrameworkCore.csproj
++++ b/src/CSharpDB.EntityFrameworkCore/CSharpDB.EntityFrameworkCore.csproj
+@@ -1,7 +1,7 @@
+ <Project Sdk="Microsoft.NET.Sdk">
+ 
+   <PropertyGroup>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <PackageId>CSharpDB.EntityFrameworkCore</PackageId>
+diff --git a/src/CSharpDB.EntityFrameworkCore/README.md b/src/CSharpDB.EntityFrameworkCore/README.md
+index 54d9d845..02235108 100644
+--- a/src/CSharpDB.EntityFrameworkCore/README.md
++++ b/src/CSharpDB.EntityFrameworkCore/README.md
+@@ -6,7 +6,7 @@ Use standard EF Core `DbContext`, migrations, and LINQ patterns against
+ embedded file-backed or private in-memory CSharpDB databases.
+ 
+ [![NuGet](https://img.shields.io/nuget/v/CSharpDB.EntityFrameworkCore)](https://www.nuget.org/packages/CSharpDB.EntityFrameworkCore)
+-[![.NET 10](https://img.shields.io/badge/.NET-10-512bd4)](https://dotnet.microsoft.com/download/dotnet/10.0)
++[![.NET 11](https://img.shields.io/badge/.NET-11-512bd4)](https://dotnet.microsoft.com/download/dotnet/11.0)
+ [![Release](https://img.shields.io/github/v/release/MaxAkbar/CSharpDB?display_name=tag&label=Release)](https://github.com/MaxAkbar/CSharpDB/releases/latest)
+ [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/MaxAkbar/CSharpDB/blob/main/LICENSE)
+ 
+@@ -296,7 +296,7 @@ remote endpoint.
+ 
+ For adoption review, the separate
+ [`csharpdb-ef` tool](../CSharpDB.EntityFrameworkCore.Tools/README.md) analyzes a
+-restored, single-target `net10.0` project's compiled migrations with the
++restored, single-target `net11.0` project's compiled migrations with the
+ provider active:
+ 
+ ```bash
+diff --git a/src/CSharpDB.Execution/CSharpDB.Execution.csproj b/src/CSharpDB.Execution/CSharpDB.Execution.csproj
+index 1a884782..9498c21e 100644
+--- a/src/CSharpDB.Execution/CSharpDB.Execution.csproj
++++ b/src/CSharpDB.Execution/CSharpDB.Execution.csproj
+@@ -19,7 +19,7 @@
+   </ItemGroup>
+ 
+   <PropertyGroup>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <Description>Query planner, operator tree, and expression evaluator for the CSharpDB embedded database.</Description>
+diff --git a/src/CSharpDB.Execution/README.md b/src/CSharpDB.Execution/README.md
+index c69b4a27..54707eb3 100644
+--- a/src/CSharpDB.Execution/README.md
++++ b/src/CSharpDB.Execution/README.md
+@@ -3,7 +3,7 @@
+ Query planner, operator tree, and expression evaluator for the [CSharpDB](https://github.com/MaxAkbar/CSharpDB) embedded database engine.
+ 
+ [![NuGet](https://img.shields.io/nuget/v/CSharpDB.Execution)](https://www.nuget.org/packages/CSharpDB.Execution)
+-[![.NET 10](https://img.shields.io/badge/.NET-10-512bd4)](https://dotnet.microsoft.com/download/dotnet/10.0)
++[![.NET 11](https://img.shields.io/badge/.NET-11-512bd4)](https://dotnet.microsoft.com/download/dotnet/11.0)
+ [![Release](https://img.shields.io/github/v/release/MaxAkbar/CSharpDB?display_name=tag&label=Release)](https://github.com/MaxAkbar/CSharpDB/releases/latest)
+ [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/MaxAkbar/CSharpDB/blob/main/LICENSE)
+ 
+diff --git a/src/CSharpDB.Execution/SqlTypeCoercion.cs b/src/CSharpDB.Execution/SqlTypeCoercion.cs
+index 24836181..93f9ad1e 100644
+--- a/src/CSharpDB.Execution/SqlTypeCoercion.cs
++++ b/src/CSharpDB.Execution/SqlTypeCoercion.cs
+@@ -367,7 +367,7 @@ internal static class SqlTypeCoercion
+         {
+             DbType.Decimal => value.AsDecimal,
+             DbType.Integer => value.AsInteger,
+-            DbType.Real when double.IsFinite(value.AsReal) => checked((decimal)value.AsReal),
++            DbType.Real when double.IsFinite(value.AsReal) => CSharpDbDecimalCodec.FromDouble(value.AsReal),
+             DbType.Text when explicitCast =>
+                 decimal.Parse(value.AsText, NumberStyles.Number, CultureInfo.InvariantCulture),
+             _ => throw new InvalidOperationException("A finite numeric value is required."),
+@@ -647,7 +647,7 @@ internal static class SqlTypeCoercion
+         else if (value.Type == DbType.Decimal)
+             text = FormatSecondsInterval(value.AsDecimal);
+         else if (value.Type == DbType.Real && explicitCast && double.IsFinite(value.AsReal))
+-            text = FormatSecondsInterval(checked((decimal)value.AsReal));
++            text = FormatSecondsInterval(CSharpDbDecimalCodec.FromDouble(value.AsReal));
+         else
+             throw new InvalidOperationException("INTERVAL DAY TO SECOND requires interval text or a numeric second count.");
+ 
+diff --git a/src/CSharpDB.Generators/CSharpDB.Generators.csproj b/src/CSharpDB.Generators/CSharpDB.Generators.csproj
+index cc0cda6a..dea9dbb0 100644
+--- a/src/CSharpDB.Generators/CSharpDB.Generators.csproj
++++ b/src/CSharpDB.Generators/CSharpDB.Generators.csproj
+@@ -14,7 +14,8 @@
+   </PropertyGroup>
+ 
+   <ItemGroup>
+-    <!-- Pinned to Roslyn 5.9.0 to match the SDK version pinned in global.json (10.0.401); newer Roslyn versions cause the analyzer to be skipped (CS9057). -->
++    <!-- Stay below the Roslyn 5.12 compiler in the .NET 11 SDK. The analyzer
++         targets netstandard2.0 so compiler hosts can load it. -->
+     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.9.0" PrivateAssets="all" />
+     <PackageReference Include="Microsoft.CodeAnalysis.Analyzers" Version="5.9.0" PrivateAssets="all" />
+     <PackageReference Include="System.Text.Json" Version="10.0.14" PrivateAssets="all" />
+diff --git a/src/CSharpDB.ImportExport/CSharpDB.ImportExport.csproj b/src/CSharpDB.ImportExport/CSharpDB.ImportExport.csproj
+index 0878efad..adae5d59 100644
+--- a/src/CSharpDB.ImportExport/CSharpDB.ImportExport.csproj
++++ b/src/CSharpDB.ImportExport/CSharpDB.ImportExport.csproj
+@@ -1,7 +1,7 @@
+ <Project Sdk="Microsoft.NET.Sdk">
+ 
+   <PropertyGroup>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <Description>Native table archive import/export support for CSharpDB.</Description>
+diff --git a/src/CSharpDB.Mcp/CSharpDB.Mcp.csproj b/src/CSharpDB.Mcp/CSharpDB.Mcp.csproj
+index f27e0885..ca4b5d6e 100644
+--- a/src/CSharpDB.Mcp/CSharpDB.Mcp.csproj
++++ b/src/CSharpDB.Mcp/CSharpDB.Mcp.csproj
+@@ -2,7 +2,7 @@
+ 
+   <PropertyGroup>
+     <OutputType>Exe</OutputType>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <RootNamespace>CSharpDB.Mcp</RootNamespace>
+@@ -15,7 +15,7 @@
+ 
+   <ItemGroup>
+     <PackageReference Include="ModelContextProtocol" Version="*" />
+-    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.14" />
++    <PackageReference Include="Microsoft.Extensions.Hosting" Version="11.0.0" />
+   </ItemGroup>
+ 
+ </Project>
+diff --git a/src/CSharpDB.Migration.Access.Worker/CSharpDB.Migration.Access.Worker.csproj b/src/CSharpDB.Migration.Access.Worker/CSharpDB.Migration.Access.Worker.csproj
+index 8ba925b7..0aa940f1 100644
+--- a/src/CSharpDB.Migration.Access.Worker/CSharpDB.Migration.Access.Worker.csproj
++++ b/src/CSharpDB.Migration.Access.Worker/CSharpDB.Migration.Access.Worker.csproj
+@@ -2,7 +2,7 @@
+ 
+   <PropertyGroup>
+     <OutputType>Exe</OutputType>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <AssemblyName>csharpdb-migration-access-worker</AssemblyName>
+diff --git a/src/CSharpDB.Migration.Access/CSharpDB.Migration.Access.csproj b/src/CSharpDB.Migration.Access/CSharpDB.Migration.Access.csproj
+index 60cf3084..bac8f986 100644
+--- a/src/CSharpDB.Migration.Access/CSharpDB.Migration.Access.csproj
++++ b/src/CSharpDB.Migration.Access/CSharpDB.Migration.Access.csproj
+@@ -1,7 +1,7 @@
+ <Project Sdk="Microsoft.NET.Sdk">
+ 
+   <PropertyGroup>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <AssemblyName>CSharpDB.Migration.Access</AssemblyName>
+@@ -13,7 +13,7 @@
+   <ItemGroup>
+     <ProjectReference Include="..\CSharpDB.Migration\CSharpDB.Migration.csproj" />
+     <ProjectReference Include="..\CSharpDB.Migration.Retained\CSharpDB.Migration.Retained.csproj" />
+-    <PackageReference Include="System.Data.OleDb" Version="10.0.14" />
++    <PackageReference Include="System.Data.OleDb" Version="11.0.0" />
+   </ItemGroup>
+ 
+   <ItemGroup>
+diff --git a/src/CSharpDB.Migration.Access/THIRD-PARTY-NOTICES.md b/src/CSharpDB.Migration.Access/THIRD-PARTY-NOTICES.md
+index cfdbe1c4..aa1ac481 100644
+--- a/src/CSharpDB.Migration.Access/THIRD-PARTY-NOTICES.md
++++ b/src/CSharpDB.Migration.Access/THIRD-PARTY-NOTICES.md
+@@ -7,16 +7,16 @@ prerequisite and is not redistributed.
+ 
+ | Package | Version | License |
+ | --- | --- | --- |
+-| System.Configuration.ConfigurationManager | 10.0.14 | MIT |
+-| System.Data.OleDb | 10.0.14 | MIT |
+-| System.Diagnostics.EventLog | 10.0.14 | MIT |
+-| System.Diagnostics.PerformanceCounter | 10.0.14 | MIT |
+-| System.Security.Cryptography.ProtectedData | 10.0.14 | MIT |
++| System.Configuration.ConfigurationManager | 11.0.0 | MIT |
++| System.Data.OleDb | 11.0.0 | MIT |
++| System.Diagnostics.EventLog | 11.0.0 | MIT |
++| System.Diagnostics.PerformanceCounter | 11.0.0 | MIT |
++| System.Security.Cryptography.ProtectedData | 11.0.0 | MIT |
+ 
+ ## System.Data.OleDb
+ 
+ - Package: System.Data.OleDb
+-- Version: 10.0.14
++- Version: 11.0.0
+ - Project: https://github.com/dotnet/runtime
+ - License: MIT
+ 
+diff --git a/src/CSharpDB.Migration.CSharpDb.Ddl/CSharpDB.Migration.CSharpDb.Ddl.csproj b/src/CSharpDB.Migration.CSharpDb.Ddl/CSharpDB.Migration.CSharpDb.Ddl.csproj
+index a318712d..b8fae71d 100644
+--- a/src/CSharpDB.Migration.CSharpDb.Ddl/CSharpDB.Migration.CSharpDb.Ddl.csproj
++++ b/src/CSharpDB.Migration.CSharpDb.Ddl/CSharpDB.Migration.CSharpDb.Ddl.csproj
+@@ -1,7 +1,7 @@
+ <Project Sdk="Microsoft.NET.Sdk">
+ 
+   <PropertyGroup>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <AssemblyName>CSharpDB.Migration.CSharpDb.Ddl</AssemblyName>
+diff --git a/src/CSharpDB.Migration.CSharpDb/CSharpDB.Migration.CSharpDb.csproj b/src/CSharpDB.Migration.CSharpDb/CSharpDB.Migration.CSharpDb.csproj
+index db0b25c4..a4eea7de 100644
+--- a/src/CSharpDB.Migration.CSharpDb/CSharpDB.Migration.CSharpDb.csproj
++++ b/src/CSharpDB.Migration.CSharpDb/CSharpDB.Migration.CSharpDb.csproj
+@@ -1,7 +1,7 @@
+ <Project Sdk="Microsoft.NET.Sdk">
+ 
+   <PropertyGroup>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <AssemblyName>CSharpDB.Migration.CSharpDb</AssemblyName>
+diff --git a/src/CSharpDB.Migration.Compatibility/CSharpDB.Migration.Compatibility.csproj b/src/CSharpDB.Migration.Compatibility/CSharpDB.Migration.Compatibility.csproj
+index f380836a..e30a2004 100644
+--- a/src/CSharpDB.Migration.Compatibility/CSharpDB.Migration.Compatibility.csproj
++++ b/src/CSharpDB.Migration.Compatibility/CSharpDB.Migration.Compatibility.csproj
+@@ -1,7 +1,7 @@
+ <Project Sdk="Microsoft.NET.Sdk">
+ 
+   <PropertyGroup>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <AssemblyName>CSharpDB.Migration.Compatibility</AssemblyName>
+diff --git a/src/CSharpDB.Migration.DualRun/CSharpDB.Migration.DualRun.csproj b/src/CSharpDB.Migration.DualRun/CSharpDB.Migration.DualRun.csproj
+index 8a8cf3da..70f6c26a 100644
+--- a/src/CSharpDB.Migration.DualRun/CSharpDB.Migration.DualRun.csproj
++++ b/src/CSharpDB.Migration.DualRun/CSharpDB.Migration.DualRun.csproj
+@@ -1,7 +1,7 @@
+ <Project Sdk="Microsoft.NET.Sdk">
+ 
+   <PropertyGroup>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <AssemblyName>CSharpDB.Migration.DualRun</AssemblyName>
+diff --git a/src/CSharpDB.Migration.Files/CSharpDB.Migration.Files.csproj b/src/CSharpDB.Migration.Files/CSharpDB.Migration.Files.csproj
+index 317466ff..bb5c60d4 100644
+--- a/src/CSharpDB.Migration.Files/CSharpDB.Migration.Files.csproj
++++ b/src/CSharpDB.Migration.Files/CSharpDB.Migration.Files.csproj
+@@ -1,7 +1,7 @@
+ <Project Sdk="Microsoft.NET.Sdk">
+ 
+   <PropertyGroup>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <AssemblyName>CSharpDB.Migration.Files</AssemblyName>
+diff --git a/src/CSharpDB.Migration.LiteDb/CSharpDB.Migration.LiteDb.csproj b/src/CSharpDB.Migration.LiteDb/CSharpDB.Migration.LiteDb.csproj
+index 8f27529c..43af66d6 100644
+--- a/src/CSharpDB.Migration.LiteDb/CSharpDB.Migration.LiteDb.csproj
++++ b/src/CSharpDB.Migration.LiteDb/CSharpDB.Migration.LiteDb.csproj
+@@ -1,7 +1,7 @@
+ <Project Sdk="Microsoft.NET.Sdk">
+ 
+   <PropertyGroup>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <AssemblyName>CSharpDB.Migration.LiteDb</AssemblyName>
+diff --git a/src/CSharpDB.Migration.MySql.Worker/CSharpDB.Migration.MySql.Worker.csproj b/src/CSharpDB.Migration.MySql.Worker/CSharpDB.Migration.MySql.Worker.csproj
+index 9ee547b2..a1697e85 100644
+--- a/src/CSharpDB.Migration.MySql.Worker/CSharpDB.Migration.MySql.Worker.csproj
++++ b/src/CSharpDB.Migration.MySql.Worker/CSharpDB.Migration.MySql.Worker.csproj
+@@ -2,7 +2,7 @@
+ 
+   <PropertyGroup>
+     <OutputType>Exe</OutputType>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <AssemblyName>csharpdb-migration-mysql-worker</AssemblyName>
+diff --git a/src/CSharpDB.Migration.MySql/CSharpDB.Migration.MySql.csproj b/src/CSharpDB.Migration.MySql/CSharpDB.Migration.MySql.csproj
+index af72c6a0..94cb048c 100644
+--- a/src/CSharpDB.Migration.MySql/CSharpDB.Migration.MySql.csproj
++++ b/src/CSharpDB.Migration.MySql/CSharpDB.Migration.MySql.csproj
+@@ -1,7 +1,7 @@
+ <Project Sdk="Microsoft.NET.Sdk">
+ 
+   <PropertyGroup>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <AssemblyName>CSharpDB.Migration.MySql</AssemblyName>
+diff --git a/src/CSharpDB.Migration.MySql/README.md b/src/CSharpDB.Migration.MySql/README.md
+index 6c64f6b0..5e7b7b00 100644
+--- a/src/CSharpDB.Migration.MySql/README.md
++++ b/src/CSharpDB.Migration.MySql/README.md
+@@ -288,7 +288,7 @@ time-of-day semantic type.
+ ## Dependencies
+ 
+ MySqlConnector 2.6.2 is pinned directly and is managed-only. The reviewed
+-`net10.0` worker runtime package closure is recorded in
++`net11.0` worker runtime package closure is recorded in
+ `THIRD-PARTY-NOTICES.md` and accompanies the optional worker distribution.
+ This project deliberately does not reference Oracle's `MySql.Data` package or
+ optional MariaDB authentication extensions.
+diff --git a/src/CSharpDB.Migration.MySql/THIRD-PARTY-NOTICES.md b/src/CSharpDB.Migration.MySql/THIRD-PARTY-NOTICES.md
+index caf61ae0..54602351 100644
+--- a/src/CSharpDB.Migration.MySql/THIRD-PARTY-NOTICES.md
++++ b/src/CSharpDB.Migration.MySql/THIRD-PARTY-NOTICES.md
+@@ -1,12 +1,10 @@
+ # Third-Party Notices
+ 
+ The optional MySQL analyzer currently resolves the following NuGet runtime
+-dependency closure for `net10.0`. All packages are MIT licensed.
++dependency closure for `net11.0`. All packages are MIT licensed.
+ 
+ | Package | Version | License |
+ | --- | --- | --- |
+-| Microsoft.Extensions.DependencyInjection.Abstractions | 8.0.2 | MIT |
+-| Microsoft.Extensions.Logging.Abstractions | 8.0.2 | MIT |
+ | MySqlConnector | 2.6.2 | MIT |
+ 
+ ## MySqlConnector
+@@ -37,35 +35,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ SOFTWARE.
+-
+-## Microsoft.Extensions packages
+-
+-- Packages: Microsoft.Extensions.DependencyInjection.Abstractions,
+-  Microsoft.Extensions.Logging.Abstractions
+-- Version: 8.0.2
+-- Project: https://github.com/dotnet/runtime
+-- License: MIT
+-
+-The MIT License (MIT)
+-
+-Copyright (c) .NET Foundation and Contributors
+-
+-All rights reserved.
+-
+-Permission is hereby granted, free of charge, to any person obtaining a copy
+-of this software and associated documentation files (the "Software"), to deal
+-in the Software without restriction, including without limitation the rights
+-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+-copies of the Software, and to permit persons to whom the Software is
+-furnished to do so, subject to the following conditions:
+-
+-The above copyright notice and this permission notice shall be included in all
+-copies or substantial portions of the Software.
+-
+-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+-SOFTWARE.
+diff --git a/src/CSharpDB.Migration.Retained/CSharpDB.Migration.Retained.csproj b/src/CSharpDB.Migration.Retained/CSharpDB.Migration.Retained.csproj
+index af4e74b7..c4d29fbb 100644
+--- a/src/CSharpDB.Migration.Retained/CSharpDB.Migration.Retained.csproj
++++ b/src/CSharpDB.Migration.Retained/CSharpDB.Migration.Retained.csproj
+@@ -1,7 +1,7 @@
+ <Project Sdk="Microsoft.NET.Sdk">
+ 
+   <PropertyGroup>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <AssemblyName>CSharpDB.Migration.Retained</AssemblyName>
+diff --git a/src/CSharpDB.Migration.SqlServer.Worker/CSharpDB.Migration.SqlServer.Worker.csproj b/src/CSharpDB.Migration.SqlServer.Worker/CSharpDB.Migration.SqlServer.Worker.csproj
+index f3f5e324..b2a1bb5f 100644
+--- a/src/CSharpDB.Migration.SqlServer.Worker/CSharpDB.Migration.SqlServer.Worker.csproj
++++ b/src/CSharpDB.Migration.SqlServer.Worker/CSharpDB.Migration.SqlServer.Worker.csproj
+@@ -2,7 +2,7 @@
+ 
+   <PropertyGroup>
+     <OutputType>Exe</OutputType>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <AssemblyName>csharpdb-migration-sqlserver-worker</AssemblyName>
+diff --git a/src/CSharpDB.Migration.SqlServer/CSharpDB.Migration.SqlServer.csproj b/src/CSharpDB.Migration.SqlServer/CSharpDB.Migration.SqlServer.csproj
+index c81c4318..d2367d6c 100644
+--- a/src/CSharpDB.Migration.SqlServer/CSharpDB.Migration.SqlServer.csproj
++++ b/src/CSharpDB.Migration.SqlServer/CSharpDB.Migration.SqlServer.csproj
+@@ -1,7 +1,7 @@
+ <Project Sdk="Microsoft.NET.Sdk">
+ 
+   <PropertyGroup>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <AssemblyName>CSharpDB.Migration.SqlServer</AssemblyName>
+@@ -17,7 +17,7 @@
+     <ProjectReference Include="..\CSharpDB.Migration.Retained\CSharpDB.Migration.Retained.csproj" />
+     <PackageReference Include="Microsoft.Data.SqlClient" Version="7.1.1" />
+     <!-- Keep SqlClient's transitive PKCS dependency on a patched release. -->
+-    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.14" />
++    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="11.0.0" />
+     <PackageReference Include="Microsoft.SqlServer.TransactSql.ScriptDom" Version="180.140.0" />
+   </ItemGroup>
+ 
+diff --git a/src/CSharpDB.Migration.SqlServer/README.md b/src/CSharpDB.Migration.SqlServer/README.md
+index bda13a42..2a048a6d 100644
+--- a/src/CSharpDB.Migration.SqlServer/README.md
++++ b/src/CSharpDB.Migration.SqlServer/README.md
+@@ -252,7 +252,7 @@ setting. Authentication modes that require
+ 
+ ## Runtime and bitness status
+ 
+-The project targets `net10.0` and does not bundle a SQL Server engine or other
++The project targets `net11.0` and does not bundle a SQL Server engine or other
+ server-side native runtime. Microsoft.Data.SqlClient brings its own managed and
+ platform transport dependencies, including transitive SNI runtime assets where
+ the package requires them. The generic CLI has no SQL Server project or package
+diff --git a/src/CSharpDB.Migration.SqlServer/THIRD-PARTY-NOTICES.md b/src/CSharpDB.Migration.SqlServer/THIRD-PARTY-NOTICES.md
+index 24fc0a93..c6c94fe6 100644
+--- a/src/CSharpDB.Migration.SqlServer/THIRD-PARTY-NOTICES.md
++++ b/src/CSharpDB.Migration.SqlServer/THIRD-PARTY-NOTICES.md
+@@ -13,12 +13,7 @@ Microsoft Software License Terms included at
+ | Microsoft.Data.SqlClient.Extensions.Abstractions | 7.1.1 | MIT |
+ | Microsoft.Data.SqlClient.Internal.Logging | 7.1.1 | MIT |
+ | Microsoft.Data.SqlClient.SNI.runtime | 7.1.0 | Microsoft Software License Terms |
+-| Microsoft.Extensions.Caching.Abstractions | 9.0.18 | MIT |
+ | Microsoft.Extensions.Caching.Memory | 9.0.18 | MIT |
+-| Microsoft.Extensions.DependencyInjection.Abstractions | 10.0.0 | MIT |
+-| Microsoft.Extensions.Logging.Abstractions | 10.0.0 | MIT |
+-| Microsoft.Extensions.Options | 9.0.18 | MIT |
+-| Microsoft.Extensions.Primitives | 9.0.18 | MIT |
+ | Microsoft.IdentityModel.Abstractions | 8.16.0 | MIT |
+ | Microsoft.IdentityModel.JsonWebTokens | 8.16.0 | MIT |
+ | Microsoft.IdentityModel.Logging | 8.16.0 | MIT |
+@@ -30,7 +25,7 @@ Microsoft Software License Terms included at
+ | System.Configuration.ConfigurationManager | 9.0.18 | MIT |
+ | System.Diagnostics.EventLog | 9.0.18 | MIT |
+ | System.IdentityModel.Tokens.Jwt | 8.16.0 | MIT |
+-| System.Security.Cryptography.Pkcs | 10.0.14 | MIT |
++| System.Security.Cryptography.Pkcs | 11.0.0 | MIT |
+ | System.Security.Cryptography.ProtectedData | 9.0.18 | MIT |
+ | System.Threading.RateLimiting | 9.0.18 | MIT |
+ 
+diff --git a/src/CSharpDB.Migration.Sqlite/CSharpDB.Migration.Sqlite.csproj b/src/CSharpDB.Migration.Sqlite/CSharpDB.Migration.Sqlite.csproj
+index 01d60fb7..0b9100c6 100644
+--- a/src/CSharpDB.Migration.Sqlite/CSharpDB.Migration.Sqlite.csproj
++++ b/src/CSharpDB.Migration.Sqlite/CSharpDB.Migration.Sqlite.csproj
+@@ -1,7 +1,7 @@
+ <Project Sdk="Microsoft.NET.Sdk">
+ 
+   <PropertyGroup>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <AssemblyName>CSharpDB.Migration.Sqlite</AssemblyName>
+diff --git a/src/CSharpDB.Migration/CSharpDB.Migration.csproj b/src/CSharpDB.Migration/CSharpDB.Migration.csproj
+index d69d61af..db91ff85 100644
+--- a/src/CSharpDB.Migration/CSharpDB.Migration.csproj
++++ b/src/CSharpDB.Migration/CSharpDB.Migration.csproj
+@@ -1,7 +1,7 @@
+ <Project Sdk="Microsoft.NET.Sdk">
+ 
+   <PropertyGroup>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <AssemblyName>CSharpDB.Migration</AssemblyName>
+diff --git a/src/CSharpDB.Native/CSharpDB.Native.csproj b/src/CSharpDB.Native/CSharpDB.Native.csproj
+index cfa01ddf..ea2b3a5c 100644
+--- a/src/CSharpDB.Native/CSharpDB.Native.csproj
++++ b/src/CSharpDB.Native/CSharpDB.Native.csproj
+@@ -14,7 +14,7 @@
+   -->
+ 
+   <PropertyGroup>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <PublishAot>true</PublishAot>
+diff --git a/src/CSharpDB.Native/README.md b/src/CSharpDB.Native/README.md
+index ece604b9..a378166b 100644
+--- a/src/CSharpDB.Native/README.md
++++ b/src/CSharpDB.Native/README.md
+@@ -46,7 +46,7 @@ A NativeAOT-compiled shared library that exposes the CSharpDB embedded database
+ 
+ ### All Platforms
+ 
+-- [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) or later
++- [.NET 11 SDK](https://dotnet.microsoft.com/download/dotnet/11.0) or later
+ 
+ ### Windows
+ 
+@@ -88,7 +88,7 @@ xcode-select --install
+ dotnet publish src/CSharpDB.Native -c Release -r win-x64
+ ```
+ 
+-Output: `src/CSharpDB.Native/bin/Release/net10.0/win-x64/publish/CSharpDB.Native.dll`
++Output: `src/CSharpDB.Native/bin/Release/net11.0/win-x64/publish/CSharpDB.Native.dll`
+ 
+ For ARM64 Windows:
+ 
+@@ -102,7 +102,7 @@ dotnet publish src/CSharpDB.Native -c Release -r win-arm64
+ dotnet publish src/CSharpDB.Native -c Release -r linux-x64
+ ```
+ 
+-Output: `src/CSharpDB.Native/bin/Release/net10.0/linux-x64/publish/CSharpDB.Native.so`
++Output: `src/CSharpDB.Native/bin/Release/net11.0/linux-x64/publish/CSharpDB.Native.so`
+ 
+ For ARM64 (e.g., Raspberry Pi, AWS Graviton):
+ 
+@@ -120,7 +120,7 @@ dotnet publish src/CSharpDB.Native -c Release -r osx-arm64
+ dotnet publish src/CSharpDB.Native -c Release -r osx-x64
+ ```
+ 
+-Output: `src/CSharpDB.Native/bin/Release/net10.0/osx-arm64/publish/CSharpDB.Native.dylib`
++Output: `src/CSharpDB.Native/bin/Release/net11.0/osx-arm64/publish/CSharpDB.Native.dylib`
+ 
+ ### Android
+ 
+diff --git a/src/CSharpDB.Observability/CSharpDB.Observability.csproj b/src/CSharpDB.Observability/CSharpDB.Observability.csproj
+index 7817b2c2..e83a91be 100644
+--- a/src/CSharpDB.Observability/CSharpDB.Observability.csproj
++++ b/src/CSharpDB.Observability/CSharpDB.Observability.csproj
+@@ -1,7 +1,7 @@
+ <Project Sdk="Microsoft.NET.Sdk">
+ 
+   <PropertyGroup>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <AssemblyName>CSharpDB.Observability</AssemblyName>
+diff --git a/src/CSharpDB.Observability/README.md b/src/CSharpDB.Observability/README.md
+index baa61562..0eab4710 100644
+--- a/src/CSharpDB.Observability/README.md
++++ b/src/CSharpDB.Observability/README.md
+@@ -4,7 +4,7 @@ BCL-only observability contracts and safe runtime-diagnostics models for
+ [CSharpDB](https://github.com/MaxAkbar/CSharpDB).
+ 
+ [![NuGet](https://img.shields.io/nuget/v/CSharpDB.Observability)](https://www.nuget.org/packages/CSharpDB.Observability)
+-[![.NET 10](https://img.shields.io/badge/.NET-10-512bd4)](https://dotnet.microsoft.com/download/dotnet/10.0)
++[![.NET 11](https://img.shields.io/badge/.NET-11-512bd4)](https://dotnet.microsoft.com/download/dotnet/11.0)
+ [![Release](https://img.shields.io/github/v/release/MaxAkbar/CSharpDB?display_name=tag&label=Release)](https://github.com/MaxAkbar/CSharpDB/releases/latest)
+ [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/MaxAkbar/CSharpDB/blob/main/LICENSE)
+ 
+diff --git a/src/CSharpDB.Pipelines/CSharpDB.Pipelines.csproj b/src/CSharpDB.Pipelines/CSharpDB.Pipelines.csproj
+index 78af763c..64fe3b50 100644
+--- a/src/CSharpDB.Pipelines/CSharpDB.Pipelines.csproj
++++ b/src/CSharpDB.Pipelines/CSharpDB.Pipelines.csproj
+@@ -1,7 +1,7 @@
+ <Project Sdk="Microsoft.NET.Sdk">
+ 
+   <PropertyGroup>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <Description>Package contracts and runtime foundation for CSharpDB ETL pipelines.</Description>
+diff --git a/src/CSharpDB.Pipelines/README.md b/src/CSharpDB.Pipelines/README.md
+index 78a55a9f..5a960cdd 100644
+--- a/src/CSharpDB.Pipelines/README.md
++++ b/src/CSharpDB.Pipelines/README.md
+@@ -3,7 +3,7 @@
+ Package contracts and runtime foundation for CSharpDB ETL pipelines.
+ 
+ [![NuGet](https://img.shields.io/nuget/v/CSharpDB.Pipelines)](https://www.nuget.org/packages/CSharpDB.Pipelines)
+-[![.NET 10](https://img.shields.io/badge/.NET-10-512bd4)](https://dotnet.microsoft.com/download/dotnet/10.0)
++[![.NET 11](https://img.shields.io/badge/.NET-11-512bd4)](https://dotnet.microsoft.com/download/dotnet/11.0)
+ [![Release](https://img.shields.io/github/v/release/MaxAkbar/CSharpDB?display_name=tag&label=Release)](https://github.com/MaxAkbar/CSharpDB/releases/latest)
+ [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/MaxAkbar/CSharpDB/blob/main/LICENSE)
+ 
+diff --git a/src/CSharpDB.Pipelines/Runtime/BuiltIns/TransformSupport.cs b/src/CSharpDB.Pipelines/Runtime/BuiltIns/TransformSupport.cs
+index 98a5264b..ff4238cc 100644
+--- a/src/CSharpDB.Pipelines/Runtime/BuiltIns/TransformSupport.cs
++++ b/src/CSharpDB.Pipelines/Runtime/BuiltIns/TransformSupport.cs
+@@ -36,6 +36,8 @@ internal static class TransformSupport
+             DbType.Decimal => value switch
+             {
+                 decimal decimalValue => decimalValue,
++                double real => CSharpDbDecimalCodec.FromDouble(real),
++                float real => CSharpDbDecimalCodec.FromSingle(real),
+                 _ => Convert.ToDecimal(value, CultureInfo.InvariantCulture),
+             },
+             DbType.Text => value switch
+diff --git a/src/CSharpDB.Primitives/CSharpDB.Primitives.csproj b/src/CSharpDB.Primitives/CSharpDB.Primitives.csproj
+index 46522084..cdd1f9f2 100644
+--- a/src/CSharpDB.Primitives/CSharpDB.Primitives.csproj
++++ b/src/CSharpDB.Primitives/CSharpDB.Primitives.csproj
+@@ -1,7 +1,7 @@
+-﻿<Project Sdk="Microsoft.NET.Sdk">
++<Project Sdk="Microsoft.NET.Sdk">
+ 
+   <PropertyGroup>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <AssemblyName>CSharpDB.Primitives</AssemblyName>
+diff --git a/src/CSharpDB.Primitives/CSharpDbDecimalCodec.cs b/src/CSharpDB.Primitives/CSharpDbDecimalCodec.cs
+index 6e89c0c0..737278b6 100644
+--- a/src/CSharpDB.Primitives/CSharpDbDecimalCodec.cs
++++ b/src/CSharpDB.Primitives/CSharpDbDecimalCodec.cs
+@@ -1,3 +1,5 @@
++using System.Globalization;
++
+ namespace CSharpDB.Primitives;
+ 
+ /// <summary>
+@@ -12,6 +14,32 @@ public static class CSharpDbDecimalCodec
+ 
+     private static readonly decimal[] ScaleFactors = CreateScaleFactors();
+ 
++    /// <summary>
++    /// Converts a SQL REAL to DECIMAL using 15 significant decimal digits.
++    /// This keeps binary floating-point tails out of decimal assignments after
++    /// .NET 11 changed casts to preserve the full binary value.
++    /// </summary>
++    public static decimal FromDouble(double value)
++    {
++        if (!double.IsFinite(value))
++            throw new OverflowException("A non-finite value cannot be converted to DECIMAL.");
++
++        Span<char> text = stackalloc char[32];
++        value.TryFormat(text, out int written, "G15", CultureInfo.InvariantCulture);
++        return decimal.Parse(text[..written], NumberStyles.Float, CultureInfo.InvariantCulture);
++    }
++
++    /// <summary>Converts a single-precision value using 7 significant decimal digits.</summary>
++    public static decimal FromSingle(float value)
++    {
++        if (!float.IsFinite(value))
++            throw new OverflowException("A non-finite value cannot be converted to DECIMAL.");
++
++        Span<char> text = stackalloc char[32];
++        value.TryFormat(text, out int written, "G7", CultureInfo.InvariantCulture);
++        return decimal.Parse(text[..written], NumberStyles.Float, CultureInfo.InvariantCulture);
++    }
++
+     public static (int Precision, int Scale) ResolveFacets(int? precision, int? scale)
+     {
+         int resolvedPrecision = precision ?? DefaultPrecision;
+diff --git a/src/CSharpDB.Primitives/README.md b/src/CSharpDB.Primitives/README.md
+index 24e10491..2057f84a 100644
+--- a/src/CSharpDB.Primitives/README.md
++++ b/src/CSharpDB.Primitives/README.md
+@@ -3,7 +3,7 @@
+ Shared types, schema definitions, and error codes for the [CSharpDB](https://github.com/MaxAkbar/CSharpDB) embedded database engine.
+ 
+ [![NuGet](https://img.shields.io/nuget/v/CSharpDB.Primitives)](https://www.nuget.org/packages/CSharpDB.Primitives)
+-[![.NET 10](https://img.shields.io/badge/.NET-10-512bd4)](https://dotnet.microsoft.com/download/dotnet/10.0)
++[![.NET 11](https://img.shields.io/badge/.NET-11-512bd4)](https://dotnet.microsoft.com/download/dotnet/11.0)
+ [![Release](https://img.shields.io/github/v/release/MaxAkbar/CSharpDB?display_name=tag&label=Release)](https://github.com/MaxAkbar/CSharpDB/releases/latest)
+ [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/MaxAkbar/CSharpDB/blob/main/LICENSE)
+ 
+diff --git a/src/CSharpDB.Sql/CSharpDB.Sql.csproj b/src/CSharpDB.Sql/CSharpDB.Sql.csproj
+index 286a7650..776fd0a3 100644
+--- a/src/CSharpDB.Sql/CSharpDB.Sql.csproj
++++ b/src/CSharpDB.Sql/CSharpDB.Sql.csproj
+@@ -6,7 +6,7 @@
+   </ItemGroup>
+ 
+   <PropertyGroup>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <Description>SQL tokenizer, recursive-descent parser, and AST for the CSharpDB embedded database.</Description>
+diff --git a/src/CSharpDB.Sql/README.md b/src/CSharpDB.Sql/README.md
+index f13e8cf2..aa9daabe 100644
+--- a/src/CSharpDB.Sql/README.md
++++ b/src/CSharpDB.Sql/README.md
+@@ -3,7 +3,7 @@
+ SQL tokenizer, recursive-descent parser, and abstract syntax tree (AST) for the [CSharpDB](https://github.com/MaxAkbar/CSharpDB) embedded database engine.
+ 
+ [![NuGet](https://img.shields.io/nuget/v/CSharpDB.Sql)](https://www.nuget.org/packages/CSharpDB.Sql)
+-[![.NET 10](https://img.shields.io/badge/.NET-10-512bd4)](https://dotnet.microsoft.com/download/dotnet/10.0)
++[![.NET 11](https://img.shields.io/badge/.NET-11-512bd4)](https://dotnet.microsoft.com/download/dotnet/11.0)
+ [![Release](https://img.shields.io/github/v/release/MaxAkbar/CSharpDB?display_name=tag&label=Release)](https://github.com/MaxAkbar/CSharpDB/releases/latest)
+ [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/MaxAkbar/CSharpDB/blob/main/LICENSE)
+ 
+diff --git a/src/CSharpDB.Storage.Diagnostics/CSharpDB.Storage.Diagnostics.csproj b/src/CSharpDB.Storage.Diagnostics/CSharpDB.Storage.Diagnostics.csproj
+index 5008bb34..d8f2f3e2 100644
+--- a/src/CSharpDB.Storage.Diagnostics/CSharpDB.Storage.Diagnostics.csproj
++++ b/src/CSharpDB.Storage.Diagnostics/CSharpDB.Storage.Diagnostics.csproj
+@@ -1,7 +1,7 @@
+ <Project Sdk="Microsoft.NET.Sdk">
+ 
+   <PropertyGroup>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <Description>Read-only storage diagnostics toolkit for CSharpDB database and WAL files.</Description>
+diff --git a/src/CSharpDB.Storage.Diagnostics/README.md b/src/CSharpDB.Storage.Diagnostics/README.md
+index 441668cb..64240003 100644
+--- a/src/CSharpDB.Storage.Diagnostics/README.md
++++ b/src/CSharpDB.Storage.Diagnostics/README.md
+@@ -3,7 +3,7 @@
+ Read-only storage diagnostics and integrity checking toolkit for [CSharpDB](https://github.com/MaxAkbar/CSharpDB) database files.
+ 
+ [![NuGet](https://img.shields.io/nuget/v/CSharpDB.Storage.Diagnostics)](https://www.nuget.org/packages/CSharpDB.Storage.Diagnostics)
+-[![.NET 10](https://img.shields.io/badge/.NET-10-512bd4)](https://dotnet.microsoft.com/download/dotnet/10.0)
++[![.NET 11](https://img.shields.io/badge/.NET-11-512bd4)](https://dotnet.microsoft.com/download/dotnet/11.0)
+ [![Release](https://img.shields.io/github/v/release/MaxAkbar/CSharpDB?display_name=tag&label=Release)](https://github.com/MaxAkbar/CSharpDB/releases/latest)
+ [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/MaxAkbar/CSharpDB/blob/main/LICENSE)
+ 
+diff --git a/src/CSharpDB.Storage/CSharpDB.Storage.csproj b/src/CSharpDB.Storage/CSharpDB.Storage.csproj
+index 0ef0ba06..cb351560 100644
+--- a/src/CSharpDB.Storage/CSharpDB.Storage.csproj
++++ b/src/CSharpDB.Storage/CSharpDB.Storage.csproj
+@@ -11,7 +11,7 @@
+   </ItemGroup>
+ 
+   <PropertyGroup>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+diff --git a/src/CSharpDB/CSharpDB.csproj b/src/CSharpDB/CSharpDB.csproj
+index 77e6c865..ad0c5cab 100644
+--- a/src/CSharpDB/CSharpDB.csproj
++++ b/src/CSharpDB/CSharpDB.csproj
+@@ -1,7 +1,7 @@
+ <Project Sdk="Microsoft.NET.Sdk">
+ 
+   <PropertyGroup>
+-    <TargetFramework>net10.0</TargetFramework>
++    <TargetFramework>net11.0</TargetFramework>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <Nullable>enable</Nullable>
+     <PackageId>CSharpDB</PackageId>
+diff --git a/src/CSharpDB/README.md b/src/CSharpDB/README.md
+index 5b2e5957..79c2f79c 100644
+--- a/src/CSharpDB/README.md
++++ b/src/CSharpDB/README.md
+@@ -3,7 +3,7 @@
+ A zero-dependency embedded database engine for .NET with a documented CSharpDB SQL subset, a typed NoSQL Collection API, built-in full-text search, ETL pipelines, and an ADO.NET provider — all in a single NuGet package.
+ 
+ [![NuGet](https://img.shields.io/nuget/v/CSharpDB)](https://www.nuget.org/packages/CSharpDB)
+-[![.NET 10](https://img.shields.io/badge/.NET-10-512bd4)](https://dotnet.microsoft.com/download/dotnet/10.0)
++[![.NET 11](https://img.shields.io/badge/.NET-11-512bd4)](https://dotnet.microsoft.com/download/dotnet/11.0)
+ [![Release](https://img.shields.io/github/v/release/MaxAkbar/CSharpDB?display_name=tag&label=Release)](https://github.com/MaxAkbar/CSharpDB/releases/latest)
+ [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/MaxAkbar/CSharpDB/blob/main/LICENSE)
+ 

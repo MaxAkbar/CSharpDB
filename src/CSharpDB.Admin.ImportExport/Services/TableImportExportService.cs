@@ -946,7 +946,12 @@ public sealed class TableImportExportService(
         {
             PrimitiveDbType.Integer => PrimitiveDbValue.FromInteger(Convert.ToInt64(value, CultureInfo.InvariantCulture)),
             PrimitiveDbType.Real => PrimitiveDbValue.FromReal(Convert.ToDouble(value, CultureInfo.InvariantCulture)),
-            PrimitiveDbType.Decimal => PrimitiveDbValue.FromDecimal(Convert.ToDecimal(value, CultureInfo.InvariantCulture)),
+            PrimitiveDbType.Decimal => PrimitiveDbValue.FromDecimal(value switch
+            {
+                double real => CSharpDB.Primitives.CSharpDbDecimalCodec.FromDouble(real),
+                float real => CSharpDB.Primitives.CSharpDbDecimalCodec.FromSingle(real),
+                _ => Convert.ToDecimal(value, CultureInfo.InvariantCulture),
+            }),
             PrimitiveDbType.Text => PrimitiveDbValue.FromText(Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty),
             PrimitiveDbType.Blob => PrimitiveDbValue.FromBlob(ConvertToBytes(value)),
             _ => throw new InvalidOperationException($"Unsupported column type '{columnType}'."),

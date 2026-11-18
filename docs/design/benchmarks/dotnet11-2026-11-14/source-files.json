@@ -1,0 +1,1338 @@
+[
+  {
+    "Path": "Directory.Build.props",
+    "Sha256": "8e0982516e8aa734a6b39766fdff54651dfa99492a141e1facaa32432b05ab30"
+  },
+  {
+    "Path": "Directory.Build.targets",
+    "Sha256": "7a188e93e52eadcfe76e530fdbd6dc808fbe96e910acaa30172495c68d4d51d3"
+  },
+  {
+    "Path": "global.json",
+    "Sha256": "5feaf50426a6c5554654e326bedd2f6c6273f13b948b1ec6e11e12cae68f9f05"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/BTreeCopyUtility.cs",
+    "Sha256": "2654d068b724cbb6616378ee9fa8280bbe843a7aac7efcde52d0bc6a056bd7ac"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/CSharpDB.Engine.csproj",
+    "Sha256": "66809b67862d9e056c791041819a3f04c3a2c64250a37557f8349f0e047882ed"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/Collection.cs",
+    "Sha256": "6585a6e8500a3866f51c093db9a87879b683beea7bbb13df3cdad7446dba0125"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/CollectionDocumentCodec.cs",
+    "Sha256": "9cffc85d50feb8af5d4494c593bb06a5b069fc58e53ee7237cd8b9c33c8065c5"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/CollectionFieldAccessor.cs",
+    "Sha256": "65a1e5082be14a33b58405907ccf2d374547b156071d41eace048878c61ff463"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/CollectionIndexBinding.cs",
+    "Sha256": "bbf2f05e0df2bfd8606974ec0db759d9d8b4c724f2d70f32bfe98ff9d8c8f266"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/CollectionIndexedFieldReader.cs",
+    "Sha256": "f2e9ea0dee6e79ed40eb3078c6373878622004c40ad23ad4f8878c387dc90de5"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/CollectionModelAttributes.cs",
+    "Sha256": "77184e25b37f4acb8a7dda583116b6ed8458b73ce42828fad3c0c57b59c0cf89"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/CollectionModels.cs",
+    "Sha256": "039c3af7a5abdecfb88ce38d865644a18128910c1c0a38f86cbdee1bcde44eb2"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/Database.ReaderCatalog.cs",
+    "Sha256": "f91ec6358f3e40e8215a6dc37c8ebd7c79d05ca3a4d438c465905f832747113f"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/Database.cs",
+    "Sha256": "fe5cb0a7878d9b8dfdbeefb0ade38240acd9fa4fb14f34f4b4e21f1fa7766d54"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/DatabaseBackupCoordinator.cs",
+    "Sha256": "dfb13718bf944d5aa6e84a993b8178288214351c3bb47bf295ceaad7190d71e4"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/DatabaseForeignKeyMigrationCoordinator.cs",
+    "Sha256": "1992a8ddaca4e26b8551aa07316f72f64a8a459d1eeeca1185466ae0b629815d"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/DatabaseMaintenanceCoordinator.cs",
+    "Sha256": "13357dbedac6a03db9d6e53369bbeeb912f58023772a286cdfe711961e291bd7"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/DatabaseMaintenanceModels.cs",
+    "Sha256": "a4f2b1e3ea203bf05939a4c91df477e55deb3098aa2512b3a270bc86c2747342"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/DatabaseOptions.cs",
+    "Sha256": "79aeaf719ed5956ce9b776b3e2c70860a5ddcf110804f71bcd67009ebe8cb27f"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/DatabaseOptionsExtensions.cs",
+    "Sha256": "d0ec0037675a40cbd0b981a16fe46315f44458156c5856381a158e10a68c1929"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/EngineJsonContext.cs",
+    "Sha256": "a6b1e9e25e5a4db720798e903353165ec9946956b663fad7e8c6c2956cd4912b"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/FullTextIndexCatalog.cs",
+    "Sha256": "8599908cb6f89a05fc82c4c7254e0396786bbf60b8cc1f0bb0a3ff1d9afa0425"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/FullTextIndexReader.cs",
+    "Sha256": "9d05ebb82673f5434f42276add393b4a53745f1aa656347ba0c2596ce0df4349"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/FullTextSearchHit.cs",
+    "Sha256": "8fa93fb551be53d30a147ab0577f5bbdc5f31eba08d28a93cf3beda25b3ac6db"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/GeneratedCollection.cs",
+    "Sha256": "5f76b4d60b7b13a66a0c17ac1b82504a551e5cd26c9bc1a711334f9fc59daee8"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/GlobalUsings.StorageNamespaces.cs",
+    "Sha256": "b3f85b577a301011e13a11e2ed6e3a3bd7829c4dd71a040338873dbf962ce699"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/HybridDatabaseOptions.cs",
+    "Sha256": "bb4cb961e70728f55f667e1891787eeb2cd6016252723bd96409dc25a1039837"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/HybridDatabasePersistenceCoordinator.cs",
+    "Sha256": "968828779f0361314babae368427ccee0e24c5a401a50b71dba1dced5fa22967"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/ImplicitInsertExecutionMode.cs",
+    "Sha256": "57ad4fff0d832f5210239c687f98d4fcd7dd9ee36500fcb9a55c5107af438c65"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/InsertBatch.cs",
+    "Sha256": "67d801b7aa67ede3e81bde8774f68305f61935c40fd30216ed8375388398c06b"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/LifecycleObservability.cs",
+    "Sha256": "143b220b6f2642387321ef7f178e4c9e704d54f276db3b0516c7d29877ab3bb4"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/MaintenanceRuntimeDiagnostics.cs",
+    "Sha256": "69dca268987ea4dd931141bb2b5ac49ec8e559179e10247fc1e056eeee3f9a4b"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/OrderedCanonicalJsonValidator.cs",
+    "Sha256": "4cbcbd4d59d4e5066b0a8d7aba9e554e36893fd33286e7b50d59b606329a5f6f"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/QueryObservability.cs",
+    "Sha256": "fc3dd5dc6b46605de3b73ac8ce22c7ab4c6e4865904f8546dbc8eb3e0dd01142"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/QueryPlanRuntimeDiagnosticsAdapter.cs",
+    "Sha256": "cccc24c307348a4ab49ab0c13d608fee71b417b31b179787f6ec25bd90802b94"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/QueryRuntimeDiagnostics.Lean.cs",
+    "Sha256": "e39dc5c971259dedc69d2704119f7d592b970bf00eff01217e88b6cc45585aa4"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/QueryRuntimeDiagnostics.cs",
+    "Sha256": "a044d16849b905fcc15e98d9bec3f59c5cb34dfdffcb079abc49531c72eefe23"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/README.md",
+    "Sha256": "6bfffd3e5f496d8a983aaa747a6a2f2e41133fdbb46689e9a822f9da6725c360"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/RetainedDatabaseSnapshot.cs",
+    "Sha256": "b64c7d5089e1eac088ce4b92542c0b78005bac5c18ff0e64afe0b0fb7202de29"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/RetainedDatabaseSnapshotFile.cs",
+    "Sha256": "36601dacb315a6116870149425ef61bb3d3271d871fe95a735fb5ed277441b0c"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/RetainedDatabaseSnapshotTableReader.cs",
+    "Sha256": "6f3057de84abc72d5ca067733e988095504a95200c49bd0ffa7376499457a015"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/RetainedDatabaseSnapshotWorkspace.cs",
+    "Sha256": "4ea73705fa5b66eecc8af9659630b9d35aa3b89777ead48968364e992f14d2e0"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/StorageRuntimeDiagnostics.cs",
+    "Sha256": "fbc1db1c196cceb8136c3beee2714f1408c8899973c90d1329b86242671f92b9"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/WriteTransaction.cs",
+    "Sha256": "1c2b123800710d4a9a69c94d00a3efa28dc8c9298a79980054a00b3939bde8aa"
+  },
+  {
+    "Path": "src/CSharpDB.Engine/WriteTransactionOptions.cs",
+    "Sha256": "d7514100758ee0cbc601fe7b4dde378448d2f03a6a399b03de2d066be4e98977"
+  },
+  {
+    "Path": "src/CSharpDB.Execution/AdaptiveQueryReoptimizationRuntimeDiagnostics.cs",
+    "Sha256": "8aee348187c0784a557cfe5f0f03bd5b267fed47a3e669b98686749f89164358"
+  },
+  {
+    "Path": "src/CSharpDB.Execution/BatchEvaluation.cs",
+    "Sha256": "80805c605b58339b455b690f9f2537e689a1f34d7c437f9ac798251289d68aa4"
+  },
+  {
+    "Path": "src/CSharpDB.Execution/BatchTransport.cs",
+    "Sha256": "8a35a758438127a979f050f30e9ab5f47eb318a22966e6bffd306aa4a8a481f8"
+  },
+  {
+    "Path": "src/CSharpDB.Execution/CSharpDB.Execution.csproj",
+    "Sha256": "e7e4030d6dc46eacf8b54a766901c0bc5bc79af24b8e5be6dfe62d1252f8cd52"
+  },
+  {
+    "Path": "src/CSharpDB.Execution/CardinalityEstimator.cs",
+    "Sha256": "6a8b2f4a7ce603bdeb139390a31a753da94920781ad17781675e6f52e51ada2e"
+  },
+  {
+    "Path": "src/CSharpDB.Execution/CollationSupport.cs",
+    "Sha256": "ead75fc2513e7bd8a98b2b419feb100e1552bbbd91f6d756e1edbdc61bf4a7f9"
+  },
+  {
+    "Path": "src/CSharpDB.Execution/DecimalAggregateSemantics.cs",
+    "Sha256": "f1eb0e0bb459430330bf31ea3c3e17284853487d30b46da21e97dcdd535ec085"
+  },
+  {
+    "Path": "src/CSharpDB.Execution/ExpressionCompiler.cs",
+    "Sha256": "ae1f6a974c22958edbdf2bae822eea76f92ae8c8b21eaa2935c139cdd7f3a90d"
+  },
+  {
+    "Path": "src/CSharpDB.Execution/ExpressionEvaluator.cs",
+    "Sha256": "c0aaa26a0e00157822827340e3eba3593b0fd08c038ca8c2c8e8c2ab1b73c718"
+  },
+  {
+    "Path": "src/CSharpDB.Execution/GlobalUsings.StorageNamespaces.cs",
+    "Sha256": "0347da5c01ff65cf8d5e476c413619ba414ec2f0490e1d5b98fff100175829a2"
+  },
+  {
+    "Path": "src/CSharpDB.Execution/IOperator.cs",
+    "Sha256": "b8ac6ed134efe9160a018ed3f7c9ab1c488d18beeefa1e4ee35ad664e28b1d00"
+  },
+  {
+    "Path": "src/CSharpDB.Execution/IndexMaintenanceHelper.cs",
+    "Sha256": "5ce7309a1b5398e9bcda614c84f9cc8d46f83ef8f76d0344cfe61559cc257682"
+  },
+  {
+    "Path": "src/CSharpDB.Execution/NumericAggregateAccumulator.cs",
+    "Sha256": "d0fae5adccc993ce1060ea8ffa2303002543e5254470e5718340914abdb9f160"
+  },
+  {
+    "Path": "src/CSharpDB.Execution/NumericRelationshipIndexJoinOperator.cs",
+    "Sha256": "34629262dfdb6841d33dfe4c06b32490e7d36aa0ff7f300b53ec8e22bd84528b"
+  },
+  {
+    "Path": "src/CSharpDB.Execution/Operators.cs",
+    "Sha256": "5835ea7db5674511d72c751c7fb3e39e834c0a38f7dbf118f223d91b7ae81fa0"
+  },
+  {
+    "Path": "src/CSharpDB.Execution/OptimisticInsertSequenceContext.cs",
+    "Sha256": "62fb8d27d9fc13a503054e91da5c0f2750ea05f8152cb51174df72487888b6c2"
+  },
+  {
+    "Path": "src/CSharpDB.Execution/PhysicalPlan.cs",
+    "Sha256": "c4805dac507f8e1df468a540e70a3644ce9fd66036cde0ea4f45990c11a4dfe3"
+  },
+  {
+    "Path": "src/CSharpDB.Execution/PhysicalPlanCapture.cs",
+    "Sha256": "71b6c28cf3f2aba3c6cda59598fc592c95816ed4ecce995c9ffd10dcfcad8c63"
+  },
+  {
+    "Path": "src/CSharpDB.Execution/PreparedSelectTemplate.cs",
+    "Sha256": "8286734e7a3c41151aeb88b161e6295dcd45a9d7e566f7cf8eb2f6a16efb8f27"
+  },
+  {
+    "Path": "src/CSharpDB.Execution/PrimaryKeyRangeScanOperator.cs",
+    "Sha256": "08819b1fa0989408d808e8022e5fde4cd2e5d11f4ca92990db9e3e2aa6c5efd0"
+  },
+  {
+    "Path": "src/CSharpDB.Execution/ProjectionGatedNumericRelationshipJoinOperator.cs",
+    "Sha256": "7d858fed79aec6aac86385a3459974f612ac32edbe8b86296bc19fe2a1816043"
+  },
+  {
+    "Path": "src/CSharpDB.Execution/QueryPlanRuntimeObserver.cs",
+    "Sha256": "43fe7855e7b789c94fe23cb867ad386feb568e4cb4f1534ae992a56c96a6e354"
+  },
+  {
+    "Path": "src/CSharpDB.Execution/QueryPlanner.PhysicalPlans.cs",
+    "Sha256": "a9b0804d82d29f789f59ce9d29aaa2d1cc9b747f787f1b08ebc56cbfff70b756"
+  },
+  {
+    "Path": "src/CSharpDB.Execution/QueryPlanner.PreparedSelect.cs",
+    "Sha256": "90844eaf2b1f491d9d95995ef6471115f7fa5768048f385480b99bfe37b615ed"
+  },
+  {
+    "Path": "src/CSharpDB.Execution/QueryPlanner.SchemaInspection.cs",
+    "Sha256": "52e61fcbc0a663c1d0aeb80511aeb846786ebdba7f4653d56d18ff0a3992c983"
+  },
+  {
+    "Path": "src/CSharpDB.Execution/QueryPlanner.cs",
+    "Sha256": "59d7f1e620d68ab6f7521c96b445cc827e2daf9c99af706785380800391ae35c"
+  },
+  {
+    "Path": "src/CSharpDB.Execution/QueryResult.cs",
+    "Sha256": "cba5a446d93b713c8eefc38485bf913913e5fcad9e2764001d2e466533c342e5"
+  },
+  {
+    "Path": "src/CSharpDB.Execution/QueryResultObserver.cs",
+    "Sha256": "01617ee43a5244fff34dd848acf6f5d63f625e345426463a8cda4e1cc4870d3f"
+  },
+  {
+    "Path": "src/CSharpDB.Execution/README.md",
+    "Sha256": "e7d1c2264798401ad707613d225b93e6311af4cd7e4d48b31f57a3873077fd07"
+  },
+  {
+    "Path": "src/CSharpDB.Execution/RowConstraintValidator.cs",
+    "Sha256": "00594f61a947417900b6ccd8064e1b1fc40fb959bb36be3ffe631aad6e5d75c5"
+  },
+  {
+    "Path": "src/CSharpDB.Execution/ScalarFunctionEvaluator.cs",
+    "Sha256": "e206c8cdd2b08bb467aef4c25c739c8b2f583c8260c75c1290f49830e7754519"
+  },
+  {
+    "Path": "src/CSharpDB.Execution/SqlIndexOptionsCodec.cs",
+    "Sha256": "4cf290df869bb864539cc400dd91d2682a57031456ea3445be145a4b7cb60741"
+  },
+  {
+    "Path": "src/CSharpDB.Execution/SqlTypeCoercion.cs",
+    "Sha256": "ff188f9502196674759acb748c35b30c44a161903e5bdfbf5dadf66c470cfa35"
+  },
+  {
+    "Path": "src/CSharpDB.Execution/TableRewritePlan.cs",
+    "Sha256": "3d2b3a961d7b66e5a59902333f8b4b18a9205f3326973e8124650fd11fdd7009"
+  },
+  {
+    "Path": "src/CSharpDB.Execution/TemporaryTableManager.cs",
+    "Sha256": "7ff40539773066f0643f91318ebd79b267b0aa89a99aee48d5a0aec17eefb5ea"
+  },
+  {
+    "Path": "src/CSharpDB.Execution/WindowExpressionSupport.cs",
+    "Sha256": "1483b1f5a2f833db83f020903215002b395bd006583d9d18a5a3cd70844cd5dc"
+  },
+  {
+    "Path": "src/CSharpDB.Execution/WindowOperator.cs",
+    "Sha256": "57677c5cfeefdd00607da068db88abb791f57d83e4a3d0fbd42f7067404aa0ad"
+  },
+  {
+    "Path": "src/CSharpDB.Observability/BoundedDiagnostics.cs",
+    "Sha256": "949196608aa3b388aeabee3ffbe3cbc32627340d45c399922cd717133950af29"
+  },
+  {
+    "Path": "src/CSharpDB.Observability/CSharpDB.Observability.csproj",
+    "Sha256": "f554f40cb58ce8925e4cac52a6dd4f97a2f1872e848da149237f338827053779"
+  },
+  {
+    "Path": "src/CSharpDB.Observability/CSharpDbActivityOperation.cs",
+    "Sha256": "3911bd95e6a461ad15dea39e9d5c2a4079881e16129241b38cce4ca3d51dc1e2"
+  },
+  {
+    "Path": "src/CSharpDB.Observability/CSharpDbDeferredDiagnosticBoundary.cs",
+    "Sha256": "83111ffefaacd7d7bbccc1e8841573b042929dd85fb1cc26f17bb7684de3e45b"
+  },
+  {
+    "Path": "src/CSharpDB.Observability/CSharpDbDiagnosticEventBuffer.cs",
+    "Sha256": "a5101c12949e1d0cba4a5d7cbb643d7be67bab10ee499a775265249eb45d5f1c"
+  },
+  {
+    "Path": "src/CSharpDB.Observability/CSharpDbDiagnosticEvents.cs",
+    "Sha256": "e78510d299ba292a03ca3abdf7af5d16c497aab5229de10105be239ba82a3348"
+  },
+  {
+    "Path": "src/CSharpDB.Observability/CSharpDbDiagnostics.cs",
+    "Sha256": "3e2db10100a2ed71b57041276a6b87f7c0484a452b745e342e01db5f7161336b"
+  },
+  {
+    "Path": "src/CSharpDB.Observability/CSharpDbHealthMetricSource.cs",
+    "Sha256": "e8055c7f62a6bb1d730fa62654a8ee929ba6804683fc83e11042c01b255d3335"
+  },
+  {
+    "Path": "src/CSharpDB.Observability/CSharpDbHostState.cs",
+    "Sha256": "4166c8618b6f7e472c9e7c11e2996db7dbced5261c0dbb995eba34bcbbb9a459"
+  },
+  {
+    "Path": "src/CSharpDB.Observability/CSharpDbMetrics.cs",
+    "Sha256": "957e66b70362dcc68f3d909e7642f4be551684c152311265e7de88a781a372f6"
+  },
+  {
+    "Path": "src/CSharpDB.Observability/CSharpDbObservabilityJsonContext.cs",
+    "Sha256": "3b989529383cebfe1d3e17a842e4bce30ed0ea02cbb1b63b3b9e225c99e6153f"
+  },
+  {
+    "Path": "src/CSharpDB.Observability/CSharpDbObservabilityOptions.cs",
+    "Sha256": "1574ce89baed0cbdb23662d4b061f98405e906277fc64f886178d67e001b8c5c"
+  },
+  {
+    "Path": "src/CSharpDB.Observability/CSharpDbOperationContext.cs",
+    "Sha256": "21d50bfcc90121ebed96eb156a10a9c4c83dbb403177d866714018a1ba2b6716"
+  },
+  {
+    "Path": "src/CSharpDB.Observability/CSharpDbOperationScope.cs",
+    "Sha256": "24c5891f207aad532021651049243994d50549630686c051638a8e26a121bd6f"
+  },
+  {
+    "Path": "src/CSharpDB.Observability/CSharpDbRuntimeDiagnosticsState.cs",
+    "Sha256": "ec630e5e56c439e454fca98fb4ae39e4ec0b05ce7b65e36c110c48ac5a32711f"
+  },
+  {
+    "Path": "src/CSharpDB.Observability/DiagnosticsCollections.cs",
+    "Sha256": "ae2d89b52baf1c170a8c47edbecc842f8a810aaedfc3a84e9118a4017663d924"
+  },
+  {
+    "Path": "src/CSharpDB.Observability/DiagnosticsEnums.cs",
+    "Sha256": "851c748780d0b3139713a6ecfb2496e2495fe96ce4215dbea97812e6bd873223"
+  },
+  {
+    "Path": "src/CSharpDB.Observability/DiagnosticsTopology.cs",
+    "Sha256": "0788e8c21332d47a15ba0ee246e89e5a1cd931c70a31ff4ea3d6b4f3d137f882"
+  },
+  {
+    "Path": "src/CSharpDB.Observability/DiagnosticsTraceId.cs",
+    "Sha256": "950b7438df403db61c52e23ad689fe555522d1242a900cdbab65bc1a43e3298a"
+  },
+  {
+    "Path": "src/CSharpDB.Observability/OpaqueDiagnosticsId.cs",
+    "Sha256": "86270b0dc5553aa309d6c54fc04e637bd9794c4caf5c9c7368d4e97f4031eb73"
+  },
+  {
+    "Path": "src/CSharpDB.Observability/QueryFingerprint.cs",
+    "Sha256": "82afb511d8f4672b6a39dc71d15c2b30a9f2025b631de78cbe33c1a205269183"
+  },
+  {
+    "Path": "src/CSharpDB.Observability/README.md",
+    "Sha256": "7cffe1302266baa9ff97c9982a510184b67e7ad6ef396e569f62a10a1e13af6c"
+  },
+  {
+    "Path": "src/CSharpDB.Observability/RuntimeSnapshots.cs",
+    "Sha256": "630e84cc43099252072c80f0a363eaba0b9a2ac9b4e9c0f42845f82a47f34513"
+  },
+  {
+    "Path": "src/CSharpDB.Observability/SafeErrorProjection.cs",
+    "Sha256": "2f2858c3c5596b36c7db11f82d2e538e8435d96b2f017de334bfaa1893e6245b"
+  },
+  {
+    "Path": "src/CSharpDB.Primitives/AdaptiveQueryReoptimizationOptions.cs",
+    "Sha256": "f6c0d374be1040ecdc75ba525976a9db440d5452d2d6b1a00daba10163eaaa11"
+  },
+  {
+    "Path": "src/CSharpDB.Primitives/AutomationManifestValidation.cs",
+    "Sha256": "f4e8f1114d450e333ad3e0c1b7f50e090a341f5e0a82539b5bcfb904a2e16be4"
+  },
+  {
+    "Path": "src/CSharpDB.Primitives/AutomationStubGeneration.cs",
+    "Sha256": "a9674e31e5adc2624962eb421f4618d770b379dbdfdbb2031fd75dad921573f5"
+  },
+  {
+    "Path": "src/CSharpDB.Primitives/CSharpDB.Primitives.csproj",
+    "Sha256": "0891f02009ddaa7e3d0b0d7687b9a66095ad211d03872dff0105c4d1ca5c07f6"
+  },
+  {
+    "Path": "src/CSharpDB.Primitives/CSharpDbDecimalCodec.cs",
+    "Sha256": "15e077f2d6b3731fabc28d3a8994cefef78f25d3194033fa61bddf09b4a506e1"
+  },
+  {
+    "Path": "src/CSharpDB.Primitives/CSharpDbException.cs",
+    "Sha256": "ce4a1b03c2d7570e2e4f75f43e462c16b4578fd20d52e6c52e5599aa0f5ec787"
+  },
+  {
+    "Path": "src/CSharpDB.Primitives/CSharpDbTextCodec.cs",
+    "Sha256": "e2d1fd171d28bcb76da9962fa0c0900abe2ef0dd11bbc2c0e6061354365fbfc4"
+  },
+  {
+    "Path": "src/CSharpDB.Primitives/CSharpDbXmlCodec.cs",
+    "Sha256": "894526b9b56ea5977cf9d007460e614253bf9cdd73aae721f93da536e85fb50b"
+  },
+  {
+    "Path": "src/CSharpDB.Primitives/DbActions.cs",
+    "Sha256": "7d8845df2afc0fd55f7b3898dd61ab4f5f47ce63e714055ba3467339ffef9699"
+  },
+  {
+    "Path": "src/CSharpDB.Primitives/DbAutomationMetadata.cs",
+    "Sha256": "7d83ac981a04499db17f0674d41f9b1a79a2f481931cf7c79e49761f9b4eab16"
+  },
+  {
+    "Path": "src/CSharpDB.Primitives/DbBuiltInFunctionRegistry.cs",
+    "Sha256": "46acc34e686644008eb1413308753950f8d498360f628fa832ce22b54c077f33"
+  },
+  {
+    "Path": "src/CSharpDB.Primitives/DbBuiltInScalarFunctions.cs",
+    "Sha256": "ecc08db7be2452d07b138f75d931a7a213f91a5665c5be89e899a56e24205d3f"
+  },
+  {
+    "Path": "src/CSharpDB.Primitives/DbCallbackDiagnostics.cs",
+    "Sha256": "90710dd430b6f2dac6c7fc572ebaf640e4991a476b79b1b551bcbbbfa804ab1e"
+  },
+  {
+    "Path": "src/CSharpDB.Primitives/DbCatalogRegistry.cs",
+    "Sha256": "cb8a0844b2cfbe34f0fa4d9644efcbbdebd73ce833e423bb5d01d7f48da42eeb"
+  },
+  {
+    "Path": "src/CSharpDB.Primitives/DbCommandArguments.cs",
+    "Sha256": "752d39706193f56705963504bf6a1a3d97f7849fd4c6efdaf1a86b8a07092b3e"
+  },
+  {
+    "Path": "src/CSharpDB.Primitives/DbCommands.cs",
+    "Sha256": "ce2dc238cd181308ca1eb02d2a254fb058449c1ff058ade38ec422535b7c07a4"
+  },
+  {
+    "Path": "src/CSharpDB.Primitives/DbExtensions.cs",
+    "Sha256": "64cf9ae2134b81998fc75fecb7cd859ac4b2e350e11dd34741f9df9e4ec62472"
+  },
+  {
+    "Path": "src/CSharpDB.Primitives/DbFunctions.cs",
+    "Sha256": "a51f9611bdb03b7521a00eb355675ccf14015458d969bae02b3e57a9d19b5ba3"
+  },
+  {
+    "Path": "src/CSharpDB.Primitives/DbHostCallbacks.cs",
+    "Sha256": "dc5e5f392cb62402c32be11e1c405255b95139d829860f5197c28230df0b0e69"
+  },
+  {
+    "Path": "src/CSharpDB.Primitives/DbType.cs",
+    "Sha256": "d340b001a4511b18403fcd5a529dcf6e0c9e8b45bddab91197ec0c047e69a028"
+  },
+  {
+    "Path": "src/CSharpDB.Primitives/DbValidationRules.cs",
+    "Sha256": "4dad7b88970a35d4afcbbb7b7c97a70b83cb2c924ddbf3b9613a72aec2eedb32"
+  },
+  {
+    "Path": "src/CSharpDB.Primitives/DbValue.cs",
+    "Sha256": "d1761ab223b2ac2bd1fe6a6de11a1ef4d0c0f9e709f5782f180f51e776276085"
+  },
+  {
+    "Path": "src/CSharpDB.Primitives/FullTextIndexOptions.cs",
+    "Sha256": "e3065da8634cb592358fe17968259bf5fe456219a521d69f002d3afefd7c2ef1"
+  },
+  {
+    "Path": "src/CSharpDB.Primitives/README.md",
+    "Sha256": "99dacc2c71dde2d8ac254e1b2b091b9378622d9ca940d2e23ba641b599259dee"
+  },
+  {
+    "Path": "src/CSharpDB.Primitives/Schema.cs",
+    "Sha256": "089a871ea2a07f2d518e8b9548c214a1bf5af356aebf99d15bf5af4be4193ceb"
+  },
+  {
+    "Path": "src/CSharpDB.Primitives/SchemaIdentity.cs",
+    "Sha256": "a86680d846583fdf97dbfe3c991289bb2bdfe00d57a761f7e0a80641a4554000"
+  },
+  {
+    "Path": "src/CSharpDB.Primitives/SqlIdentifierRules.cs",
+    "Sha256": "adb453b60246a417f9908b113388861e63382503c00f2a87313df41528428fb7"
+  },
+  {
+    "Path": "src/CSharpDB.Primitives/SqlLiteralRules.cs",
+    "Sha256": "a3a4ac26de2e30899fbd415eebe67d75690fe7c18222f744b855158827960c5a"
+  },
+  {
+    "Path": "src/CSharpDB.Primitives/SqlTypeDescriptor.cs",
+    "Sha256": "8991c51e26dd2a4bd0628ce2a66db906bd347e27f403262d75299a8733d3b624"
+  },
+  {
+    "Path": "src/CSharpDB.Primitives/SqlTypeKind.cs",
+    "Sha256": "e7b37a2fed73d344eef3e1712a091707fe94fcf6ce1238048d91e6bafec5f59e"
+  },
+  {
+    "Path": "src/CSharpDB.Primitives/WindowExecutionOptions.cs",
+    "Sha256": "b2f260580b4ceb2f46f3190be8cd924fad612377adc8073343a84ba4fb214007"
+  },
+  {
+    "Path": "src/CSharpDB.Sql/Ast.cs",
+    "Sha256": "3621dc18c3b2cf3ca294852509bc4110ca46ea984a96844d35abe0881d5d9726"
+  },
+  {
+    "Path": "src/CSharpDB.Sql/CSharpDB.Sql.csproj",
+    "Sha256": "7c265f227094d7311caae9e3964030402a9ccc803ab5b4db5085e5c22854b9f7"
+  },
+  {
+    "Path": "src/CSharpDB.Sql/Parser.cs",
+    "Sha256": "0f8688291a58279dd89335fd3a7ba55afe57d02a8ade550fd5b78f412dbae06a"
+  },
+  {
+    "Path": "src/CSharpDB.Sql/README.md",
+    "Sha256": "e0da9971887b4aad2937c3e173d1d1dec0294532e74b17ba54b430423038b42b"
+  },
+  {
+    "Path": "src/CSharpDB.Sql/SqlDependencyAnalyzer.cs",
+    "Sha256": "aaa461547d26c8082d554b8be31860d2a0f07e03e3e07082644b1921bde6f84a"
+  },
+  {
+    "Path": "src/CSharpDB.Sql/SqlQueryFingerprintProvider.cs",
+    "Sha256": "4d7c6c6d92dc0c081e1849e7080f884d7d4ad09c4f6f22eaafacd8f63b5534fd"
+  },
+  {
+    "Path": "src/CSharpDB.Sql/SqlScriptParser.cs",
+    "Sha256": "27326c430c366be72bf730657d9801467bbf67f9d3dd2dcd82f63b3b402c4cc4"
+  },
+  {
+    "Path": "src/CSharpDB.Sql/SqlScriptSplitter.cs",
+    "Sha256": "29f58286293208c8b7824d287dbe3a41cd8cbda0ae9218aaf6770e28db3a7728"
+  },
+  {
+    "Path": "src/CSharpDB.Sql/SqlStatementClassifier.cs",
+    "Sha256": "73de630e5aef4d7112a460eea66bdae3dbea88711ee3644d21df831f932c40b0"
+  },
+  {
+    "Path": "src/CSharpDB.Sql/Token.cs",
+    "Sha256": "1de500b79b622284f741b5a3a0938c468aaa7cfbcc943b55ccdf62e3291a356e"
+  },
+  {
+    "Path": "src/CSharpDB.Sql/TokenType.cs",
+    "Sha256": "832069e7695ba7b176b51c017620006e362f7ffbe7ab9108406857d539ad4a8a"
+  },
+  {
+    "Path": "src/CSharpDB.Sql/Tokenizer.cs",
+    "Sha256": "772ebfb5a087003ff8491dbfc750222e0f1fc1e6a24d774f53c763a47ddcf7ba"
+  },
+  {
+    "Path": "src/CSharpDB.Storage.Diagnostics/CSharpDB.Storage.Diagnostics.csproj",
+    "Sha256": "89df499b6ef4e9c121a40b46d11e13857c2dfaeb3aa267baf810ccb7a9c4fb55"
+  },
+  {
+    "Path": "src/CSharpDB.Storage.Diagnostics/DatabaseInspector.cs",
+    "Sha256": "6f2a6cd281629be21b8116aff1f0921e3ef75c5177396e9311244352b8c062c3"
+  },
+  {
+    "Path": "src/CSharpDB.Storage.Diagnostics/GlobalUsings.StorageNamespaces.cs",
+    "Sha256": "82243a1704425ef30a691c98e09e24012f6b00c19bc50829190b2a09dd7cb05a"
+  },
+  {
+    "Path": "src/CSharpDB.Storage.Diagnostics/IndexInspector.cs",
+    "Sha256": "1257706f9fcb364f13f91b910c46982defe3304ba3fe47538378ee040d6c2061"
+  },
+  {
+    "Path": "src/CSharpDB.Storage.Diagnostics/Internal/InspectorEngine.cs",
+    "Sha256": "c1b6cae7058405931abd2739bf3a2dd27797417f5dd178ae90156f2844b0fb23"
+  },
+  {
+    "Path": "src/CSharpDB.Storage.Diagnostics/Models/DatabaseInspectOptions.cs",
+    "Sha256": "fd03b1290874abef4ad4d8ee35b0bef69e11c47bb3c60eb3c00d2251a767143e"
+  },
+  {
+    "Path": "src/CSharpDB.Storage.Diagnostics/Models/DatabaseInspectReport.cs",
+    "Sha256": "d51fc669edc9c672f54160a5368893eca7db643d327ff02a2f1800c19077d406"
+  },
+  {
+    "Path": "src/CSharpDB.Storage.Diagnostics/Models/DatabaseInspectionMode.cs",
+    "Sha256": "6e5b147cc8127334856f72fe8f700651f2e12a7d8a2ee984896675024f1e5a71"
+  },
+  {
+    "Path": "src/CSharpDB.Storage.Diagnostics/Models/FileHeaderReport.cs",
+    "Sha256": "0b23d36a770a655cae01fb3d53aa2b54835c620828714effba1c83c97aec14c4"
+  },
+  {
+    "Path": "src/CSharpDB.Storage.Diagnostics/Models/IndexInspectReport.cs",
+    "Sha256": "8ff3686efa348c74ec59119aea5b010a8938822335fc3bc26f2722e51537d5f0"
+  },
+  {
+    "Path": "src/CSharpDB.Storage.Diagnostics/Models/InspectSeverity.cs",
+    "Sha256": "778ea91170e57edfdc613b2a27f4d2b2be3e147bb6cdc30164ef83ab1ade4845"
+  },
+  {
+    "Path": "src/CSharpDB.Storage.Diagnostics/Models/IntegrityIssue.cs",
+    "Sha256": "90cd19192dfb64922fa9dc9ef29e7b8a09ebf5e299a1d0c1dc7187ced57e26ea"
+  },
+  {
+    "Path": "src/CSharpDB.Storage.Diagnostics/Models/InteriorCellReport.cs",
+    "Sha256": "ad7e6e2149a2562dd3ae7bdfca7e8c2317b2873cef8fab0fcffa1a11ff5a65bb"
+  },
+  {
+    "Path": "src/CSharpDB.Storage.Diagnostics/Models/LeafCellReport.cs",
+    "Sha256": "1327614d387bbe6c7e4195340b1a39d90724258494aa3788c2daa658e25b7570"
+  },
+  {
+    "Path": "src/CSharpDB.Storage.Diagnostics/Models/PageInspectReport.cs",
+    "Sha256": "d139a07bfa7009ce25e2dc25bb08e71e740d6543546693324f858ec6c6aff575"
+  },
+  {
+    "Path": "src/CSharpDB.Storage.Diagnostics/Models/PageReport.cs",
+    "Sha256": "476129cac2e90a7717f39ec89d077919ce426e1059f6a05535d1b7f2ae4586f4"
+  },
+  {
+    "Path": "src/CSharpDB.Storage.Diagnostics/Models/WalInspectReport.cs",
+    "Sha256": "3bd12aad1ce419b53aaf1f1b65caab7d5d3b95ed090233f041b4c868537941d2"
+  },
+  {
+    "Path": "src/CSharpDB.Storage.Diagnostics/README.md",
+    "Sha256": "a2f6251bf60b0a45e0a085194e0ee44bc12673535a2383415b8e46675ee7e24e"
+  },
+  {
+    "Path": "src/CSharpDB.Storage.Diagnostics/WalInspector.cs",
+    "Sha256": "fdf189c4e2505ad6ae8f6767f49facfd11ca2fdc0fafaf795d83c0fde684cf9c"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/BTree/BTree.cs",
+    "Sha256": "d6119cecc678a409c62cd2fe89258b47a453916b27d3afc537ac8578266f5ee9"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/BTree/BTreeCursor.cs",
+    "Sha256": "cc76b8c7fce0e0ea46db94148dc8ea37b078b41c790130921cff8450eb3ce7c4"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/BTree/BTreeOverflowReferenceCodec.cs",
+    "Sha256": "9ceb64f6eac5432bafa7e63ed3c4d5a31195b6639fcb1fc23c72e71edcabdfc9"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/CSharpDB.Storage.csproj",
+    "Sha256": "33d14884d25e79435e2c3b022ed4d2b28a45460f575b66b56cf98cfe6e95db10"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Caching/DictionaryPageCache.cs",
+    "Sha256": "f37a731d0e7d8f9d15e1d740cdc971dba688de8655bae6a8a397d827941585bd"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Caching/IPageCache.cs",
+    "Sha256": "6feacc0c36ff0367861eff0366451d99576169433d7793c6035e999dcf25a27f"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Caching/IPageCacheEvictionEvents.cs",
+    "Sha256": "f29cf558a55acc30363f36e67821bffb9cc566066a954db676a4423c4fe0c8f8"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Caching/LruPageCache.cs",
+    "Sha256": "032b4d013031a0fd3fd3d08b8823d5065a1eaaddf8e3290ad25f37cda4034b75"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Catalog/CatalogCache.cs",
+    "Sha256": "03addafbe78ca6db0efb269b899067d87288ce9c4c981666468e62e18819b7eb"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Catalog/CatalogReadSnapshot.cs",
+    "Sha256": "4e3b80b53aafaaa2ab1fe5e5fb05916fcc112b06ef3b6c4a8279a4228962f524"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Catalog/CatalogService.cs",
+    "Sha256": "6b22586ea22a242d515e95717801c5dadaef946cc1fcdb912427e3f0dd4dfa41"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Catalog/CatalogStore.cs",
+    "Sha256": "5ceab1d6911a893542ec15e090924f226b0650066f80770c5d978109733f6589"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Catalog/ICatalogStore.cs",
+    "Sha256": "1c60ae05e716a461f998e742d9127b1a09230277cc35ff4dafacb977d65b0bc0"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Catalog/SchemaCatalog.cs",
+    "Sha256": "fcff816033825d6f517fc1c2ea044b17f062a365774bfdeb78ffac4e936427e4"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Checkpointing/AnyCheckpointPolicy.cs",
+    "Sha256": "94408c09b98857d378a3db58aa96e90cb4018e6591b6a091713a1ab51a57f0f0"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Checkpointing/CheckpointCoordinator.cs",
+    "Sha256": "f34bfab52a814fda43631206db848e9b08cb903e9cc25f28b2607e0706e77632"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Checkpointing/FrameCountCheckpointPolicy.cs",
+    "Sha256": "fbcdddba3a0b87f6447c5b478d0c98f6ee1e0b8dadf4e7d6e148920686f1555a"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Checkpointing/ICheckpointPolicy.cs",
+    "Sha256": "3f4c626a1c52d06406e9366098818c2ec254cb1f4db9ea440999e62ae0a20977"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Checkpointing/TimeIntervalCheckpointPolicy.cs",
+    "Sha256": "7328f0d8b60bcc32da70b33ee197301de023f7efc93ed9bdb3174497d7969d82"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Checkpointing/WalSizeCheckpointPolicy.cs",
+    "Sha256": "647e85f3f4725cf6b3a46d0d31e529937adc51b22f90b93bbf7203245e7bf100"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Device/FileStorageDevice.cs",
+    "Sha256": "66fcc010c6a65075dbb391570205047389b427b15dd270533fc0746b7d03ddb5"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Device/IStorageDevice.cs",
+    "Sha256": "896dc09db652c3c6b096e0b9152de122e05216908dd824eb39480370a184ba22"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Device/MemoryStorageDevice.cs",
+    "Sha256": "b9537ddc6f0f90912ed2df57925f0be118eb879a2a7ca20132723869c135546c"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Diagnostics/PagerSaveToFileProgress.cs",
+    "Sha256": "0b13f5c32a63819246ee0827ab0336d2c8f35ae7efe76a9e19ab311a4a8120c1"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Diagnostics/RuntimeRawSnapshots.cs",
+    "Sha256": "023d38d74c2ee4ee82f0094d0c9391cd71f340d654be9f4ee54c901636f0d3fd"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Diagnostics/StorageIoRuntimeDiagnostics.cs",
+    "Sha256": "146cb1e266298405ab8a752dc3878389fea3ed9b5a398c86660185107d88ae5c"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Diagnostics/StorageRuntimeDiagnosticsObserver.cs",
+    "Sha256": "3569c66188a0fec1ec32b2684165337bdd3e837793c7c4d59e29377acdbddc8b"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/GlobalUsings.StorageNamespaces.cs",
+    "Sha256": "3024c3a010349f592fcf3d22c53660d438c5a19d4355e78c7d0b5c34d960b84f"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Indexing/AppendOnlyRowIdChainStore.cs",
+    "Sha256": "de40dbbabf8c64c7735e6cfed6e78dc862616355ea3bd2af99c1958de17d3b1d"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Indexing/AppendableHashedIndexPayloadCodec.cs",
+    "Sha256": "a761e8f21c4e44b8c6a8c526ecc37367043faa66ccd015d7e1f7a5f5cd89bb05"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Indexing/BTreeIndexCursor.cs",
+    "Sha256": "5f9a26203cd88eb8c345d0d09581828e624b83a43566f016b3882a0a6842136a"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Indexing/BTreeIndexProvider.cs",
+    "Sha256": "0d1176f5d83b8ad00a0d5860fbff1dbb468c5b768d601e54ba63ce07e4ea18b5"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Indexing/BTreeIndexStore.cs",
+    "Sha256": "90b231b30a252a7c6e4f25258dffe0a885fcc26c15f4896cdfe082db554739e8"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Indexing/CachingBTreeIndexProvider.cs",
+    "Sha256": "88b830a9c954530b0f8abb736b8abde71ba78aa96da6be94bf7cd054947bf63f"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Indexing/CachingIndexStore.cs",
+    "Sha256": "b7b5fdd1d3030b80001c0890886d4faf02eba0ffee3961e4fca72f7d110011c9"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Indexing/EmptyIndexCursor.cs",
+    "Sha256": "0e99a4cd41217a640d8e71e59ac09e3d130da29c19cf404e135205759ef687ea"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Indexing/FullTextDocStatsPayloadCodec.cs",
+    "Sha256": "75591cf206576e7d04f36ec8cd90753daae7615a46fedbc5059f5b4996af3360"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Indexing/FullTextIndexMaintenance.cs",
+    "Sha256": "aeaca6f2a9a4795ad155634b87420cf7468477a4f40987cd082a06f31604acb6"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Indexing/FullTextIndexNaming.cs",
+    "Sha256": "4371a2fc95a0b0023140be52177545543d76749402a86e194ac8b953430fe02c"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Indexing/FullTextIndexOptionsCodec.cs",
+    "Sha256": "0073d9cd55637cc3a318e8524cb7107b5ea4cac478fe3d9b83c1c1ce0f2f5698"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Indexing/FullTextMetaPayloadCodec.cs",
+    "Sha256": "5aaa492064ff2f487d5ebd60642f3f0d68e5a9a80f6bb906136080de33b83fe7"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Indexing/FullTextPostingsPayloadCodec.cs",
+    "Sha256": "6269d26096132661f601bc9e39516cf04d80316ca2e38bd3fd58a151950f233b"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Indexing/FullTextTermKeyCodec.cs",
+    "Sha256": "d8fffd487092ae631553b15bbe376f8583367b35cb3c2aaccb916681ba5a6ec0"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Indexing/FullTextTermStatsPayloadCodec.cs",
+    "Sha256": "a484cfed0a8d186a7f169f6d317877f7622b12ecf46c2305295b4c3f22f8af91"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Indexing/FullTextTokenizer.cs",
+    "Sha256": "ff325be589dbb134c9abe847a3c5385d599c0bfb769d4887e40e8cc1dee2533a"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Indexing/HashedIndexPayloadCodec.cs",
+    "Sha256": "b92abfae083de19d3c1dbe669dd158e58243d8fbcae675f31ccd66000051ec06"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Indexing/IAppendOptimizedIndexStore.cs",
+    "Sha256": "813f13e7aaeda49ee71dab0a9c69ff81c9c69846ea9ac5d92a445bf6a5b618c9"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Indexing/ICacheAwareIndexStore.cs",
+    "Sha256": "b65abc864363ba1e2ec864ac953490da3d20281671c31416dacd2eb20e49fd9e"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Indexing/IIndexCursor.cs",
+    "Sha256": "e9d7f47a41088d89c73dfb7771ef5c2e75514b62f4bbf49f8521181b4d27ade5"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Indexing/IIndexProvider.cs",
+    "Sha256": "b5dab52753ea54bf69501b6316b4f938e2cef620a2dedebb004eaf68c688fd6d"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Indexing/IIndexStore.cs",
+    "Sha256": "069811a015f8f3f08ffc44ae36f66fda61df079f8d0fd7cb28876c3256c8eba2"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Indexing/IReclaimableIndexStore.cs",
+    "Sha256": "ed10b8a0587d2eb8ff9cffb50a5136b0b8df50c496ff563a95e4bb76b5d3a499"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Indexing/IndexOverflowPageStore.cs",
+    "Sha256": "7a3622e5b6403c7ddb14e13436fc4fd298dfcde8d786fcd2917923d8d22006ec"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Indexing/IndexOverflowReferenceCodec.cs",
+    "Sha256": "e59d96c0cb2a9cd962b85026fe7f31bbe9a2fae5e708a12c16168355c7a6d1e0"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Indexing/IndexScanRange.cs",
+    "Sha256": "db9a37aa067f4f278c4c448488e8e3443016a327d952634af2e882d0418f360d"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Indexing/OrderedTextIndexKeyCodec.cs",
+    "Sha256": "8ecf5bd2603e0a0b3d104fad5b234b6d2bb8990815591731f8e93821f67f0057"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Indexing/OrderedTextIndexPayloadCodec.cs",
+    "Sha256": "58bf39eb39a565b163c7450dbc7c78f1b0488e7a5816275d8d98844aa3dae24d"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Indexing/OverflowingIndexStore.cs",
+    "Sha256": "68f85cb7da8843b134be3e5807c73390b32a3a985757ef9a6379044ceca3bd1e"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Indexing/RealIndexKeyCodec.cs",
+    "Sha256": "3ba1224cdf2dff21eb317f83681156fac0d9d29c7ac51db9452fd5a3cf957363"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Indexing/RowIdPayloadCodec.cs",
+    "Sha256": "e22b1a8fbdd8aba78ef5c325d69b1a1f725987ef3b8b7c9eca134d20ed50a3f2"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Indexing/UpperBoundIndexCursor.cs",
+    "Sha256": "c1c7bf9159fc4784de374b348d609da7d9b40cb2c4247431ddaee86f0c1654f1"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Integrity/AdditiveChecksumProvider.cs",
+    "Sha256": "48e03dc711c960e16899676b203cc049a8c5194358c7b653e6053ebe458ebf9d"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Integrity/IPageChecksumProvider.cs",
+    "Sha256": "b29d2d8e6212c03dcc2b6b42823facd01743cae42b39447d2fbcf7cb7dcdaa20"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Internal/ProcessCrashInjector.cs",
+    "Sha256": "a5d18859ae6fe5e217392c32b6344800b0a78b7ccee23da648bc1d5b35c72c9d"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Internal/StorageDeviceCopyBatcher.cs",
+    "Sha256": "3c942395ea31137b19728843925bef64b698bb35a6489c5ee3ac5d51b7877ed8"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Paging/AutoCheckpointExecutionMode.cs",
+    "Sha256": "e2eaf1b5b380d7e6c2d515bd1d880ed0869d8d6324df9da1404a13f906aa6220"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Paging/CommitPathBTreeResourceDiagnosticsSnapshot.cs",
+    "Sha256": "e8769e0b3f502e639e61741e81fb09c61d32f64a009c8409fd12fc404faad671"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Paging/CommitPathDiagnosticsSnapshot.cs",
+    "Sha256": "035d8f11a96d8e38c90a8a32809f2deea936f374aad1971d73e1f2950bedb677"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Paging/CompositePageOperationInterceptor.cs",
+    "Sha256": "83d2296d0f77b7439177bf098cf0166aa5a9ddf7a1ec10e489e169c086a3f4d4"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Paging/DirtyParentLeafSplitRecoveryRejectReason.cs",
+    "Sha256": "900b77698941fdc92f0ab33bcbec87297f6cfe34e614eee612aaa2f4bf258f52"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Paging/ExplicitLeafSplitFallbackRejectReason.cs",
+    "Sha256": "9d58dd88f7262c64d67fe38faafa3fff97ee6ca4b8e5339db19f2cf57b622c74"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Paging/ExplicitLeafStructuralRejectReason.cs",
+    "Sha256": "d4198f145c33d2e58732f59132812d4df01b2b6f0b16e1f4d99262b549cb73fd"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Paging/ICommitPathDiagnosticsProvider.cs",
+    "Sha256": "4d896704927f7295cfd89f4f2898d4ca16224dfb799ac7508287dbfeabf8a87b"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Paging/IPageAllocator.cs",
+    "Sha256": "772f28ac44d70ceb2b85f7a5d3ca71605f2bb3b5183f56d7e19ebfd64a06645a"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Paging/IPageOperationInterceptor.cs",
+    "Sha256": "288f779ffdaefe28eb796eb6103ee4c5792e98641cddd82eb117cccc3e322395"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Paging/IPageReadProvider.cs",
+    "Sha256": "6781ba367e97e1672b4b58f183e5310196c6ec7275ee3730cc02b27d08a49bfa"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Paging/InsertOnlyRebaseResult.cs",
+    "Sha256": "4ce900404348109f27c6529b7d7a581304d862afb070adcba7b88df56f9bf421"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Paging/InteriorInsertRebaseHelper.cs",
+    "Sha256": "116db78ebb51d3f1ca05f8596de6f772d9a63ef047bad56d716bdcb4997297fb"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Paging/LeafInsertRebaseHelper.cs",
+    "Sha256": "e1cc96554528790227c7d18f5191e8cac5670964fd51a142282024e0f2bf9af5"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Paging/LeafInsertRebaseRejectReason.cs",
+    "Sha256": "90d64d4489a89331c96b2cfc7b06ca22361eb88c21a474d0113eb72c3a41f783"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Paging/LeafInsertSplitPlan.cs",
+    "Sha256": "a941ca7ff72e2eb9158fdd900ca3709b049d3d6680e656db6c2efb0ef7898728"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Paging/LeafInsertThreeWaySplitPlan.cs",
+    "Sha256": "c0b3ccef2de10a130584c5be5216a765108fa355aefbf552b424f9226a9a9971"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Paging/MemoryMappedPageReadProvider.cs",
+    "Sha256": "9e180ba4f17eabbe4ebb5ec2e4fb7b9edb2bd6da63c68791fe1d9623e7df06e9"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Paging/NoOpPageOperationInterceptor.cs",
+    "Sha256": "49932f7264c99f27c2fac9a7987558a732039bcd7b56104caa2b6d6da24c4ad0"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Paging/OverflowPageStore.cs",
+    "Sha256": "75c3c1a3c35ffba3a33f92fbf9dd54dd40fbebb06e54486d3ad0bfd36fbc90b4"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Paging/PageAllocator.cs",
+    "Sha256": "0cf7493dfc129d08a6fc830d8f8f349798328397ed640a7200f4eddf20cba367"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Paging/PageBufferManager.cs",
+    "Sha256": "fac1e170c2b16bab71a323fa48f47c9640c5402e32dd235c6b381ac423810d16"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Paging/PageConstants.cs",
+    "Sha256": "d4a4205dd8aacbd3ed7f3d8465f956e07f762b5f93bb8be4f6115d4f790314c2"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Paging/PageReadBuffer.cs",
+    "Sha256": "4e17d62e43a8df73b4b94ceda7c2ba8d1e8a205de47113c3ec85a1818834f1bd"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Paging/PageReadSource.cs",
+    "Sha256": "2dfcecc3dfabcf49d7c0d12055d505ec48e6b443506b6da9120a84fad24f1bd0"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Paging/Pager.cs",
+    "Sha256": "1c01fb283ed1ce222aaf2d157434a683a4622241e40ee6a90dd8a91761b60e37"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Paging/PagerCommitResult.cs",
+    "Sha256": "618f733a00da40b290eac53c1e367163f5eef3206185538f6afc7fd5b426fcaf"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Paging/PagerOptions.cs",
+    "Sha256": "26a59bbc0188e0379653f20fa3c8555e8d5d535c3074127333c8749f08f5a970"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Paging/ReadOnlyPageAllocator.cs",
+    "Sha256": "387e56bdf5ea91349fd4ebe2d5ebfe9ae5cefe28e7fd20914d36355d20487179"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Paging/ReadOnlySlottedPage.cs",
+    "Sha256": "824d5e43601665bac87d238682a8b56eb0212de038204e4e564554cf79eaf796"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Paging/SlottedPage.cs",
+    "Sha256": "65404fb8da68d02936655b3d52ffe5646ca3f12da2d9fdabf397fa5c51dad4bd"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Paging/StorageDevicePageReadProvider.cs",
+    "Sha256": "5bd673c8fd35b6dbaa4084a5ef5cc812d29d42c6e0f36b7a9c0bb4bcdbc86b7e"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Paging/WalReadCache.cs",
+    "Sha256": "00bc9a2135853cc50c5c68c083995565e4ebc35ab61b49c63acb805f707c679b"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/README.md",
+    "Sha256": "6d033d82db8c7cf3ba30859c534e6afe9185263b29c726c1d57172cab2abea93"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Serialization/CollectionAwareRecordSerializer.cs",
+    "Sha256": "c10d6f8efb6b3ccb32a0d7140b423ff0beff0275b8b5ad67ecd36809732fe348"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Serialization/CollectionBinaryDocumentCodec.cs",
+    "Sha256": "ec3942b4d52749681fe7c51c14f6b9d9c87aa41cf4584882e116dd8f6c98c589"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Serialization/CollectionPayloadCodec.cs",
+    "Sha256": "cea554154c8060699b1a7c75832ff28086e4a68f8e0a8f4fe630df29c9f2bd13"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Serialization/DefaultRecordSerializer.cs",
+    "Sha256": "2c3dca2eb314841e941b11e3e410287c660b4df87194b8643cf9cbd23926a6a0"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Serialization/DefaultSchemaSerializer.cs",
+    "Sha256": "93f460958863b3f9114d4bcc241fbb671f7150feabdad921485092f545eed5ae"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Serialization/DefaultSerializerProvider.cs",
+    "Sha256": "25ae8d7a063c9eac74abe5f7e2cc4844f25cbb376c37537525f85796d18d33d2"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Serialization/IRecordSerializer.cs",
+    "Sha256": "22ecb95a30a2f8c0c080bcfdfbaccb6ca063723498d85fb14a177926a4457c5f"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Serialization/ISchemaSerializer.cs",
+    "Sha256": "b2df02c95366a95c558c319ad9e54d286e9e42255bfd8dda10b9f2d91ad450e9"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Serialization/ISerializerProvider.cs",
+    "Sha256": "5d9b21b214c489c130ed6433421570d29d207fed0a703a6f8797b9a2852747f5"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Serialization/RecordColumnAccessor.cs",
+    "Sha256": "4443c7cea2231c175ff4d6404e9efe6a7c1003b1eabb986b09df6e4dbc211d4f"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Serialization/RecordEncoder.cs",
+    "Sha256": "c0959648056857eb86e0f7a2dbebc1a31d4d7b8391d74bb46757000d0bda518e"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Serialization/SchemaSerializer.cs",
+    "Sha256": "d1d55fb4bdd3a69627170c68ac0d6b70c37d06054546e4a7d8d53c55f67ad8d9"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Serialization/Varint.cs",
+    "Sha256": "dd301a44bc8c261218ed0da6a718551195ccb8e3a229401713a6555ec2b13ac5"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/StorageEngine/AdvisoryStatisticsPersistenceMode.cs",
+    "Sha256": "ee886f22947fc9010c1d2e2741c8c73fb03bc026571534262e700374a4c91a50"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/StorageEngine/DefaultStorageEngineFactory.cs",
+    "Sha256": "1913f022827f92d1b2a6c38a2d5d3b10e18d49191c71597699b235da88bad801"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/StorageEngine/DurabilityMode.cs",
+    "Sha256": "90cc24bd8e2529ab1490ed392e85d6fe245ef2c4eefc41f1275d0b25e57b6ef4"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/StorageEngine/DurableGroupCommitOptions.cs",
+    "Sha256": "c2f0e706e455de9cfbf2ab2f735b6b1a4e39e1c021a600c40e150f7dbc380bae"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/StorageEngine/HybridStorageEngineFactory.cs",
+    "Sha256": "2d8bacf24022fabe4ea1cc53b4d11c0f7a6a3fcc29d1e5f38073101f8cb5c853"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/StorageEngine/IStorageEngineFactory.cs",
+    "Sha256": "19d2cbea56016192899f205e5fd3889a4685b3933250ddb15ef7737bd51c91ff"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/StorageEngine/InMemoryStorageEngineFactory.cs",
+    "Sha256": "5f55124bfeb88712ff12c1d07d6a6fdb86129067ef4c6960293291263b1aabe0"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/StorageEngine/StorageEngineContext.cs",
+    "Sha256": "d6f93f423369517ac63759b3d52c5388c96ed175abd5fa9a9f3655efc1aa89c2"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/StorageEngine/StorageEngineOptions.cs",
+    "Sha256": "4fa5b11881a8f4db8acd0e9a77b8b9ce205dfcb7ab694d3641b3b39de696e07e"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/StorageEngine/StorageEngineOptionsBuilder.cs",
+    "Sha256": "4b53bcb41f2674a9900f3f9af75585e62e961f1756a47bb0b6bea49a65854084"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/StorageEngine/StorageEngineOptionsExtensions.cs",
+    "Sha256": "e0a4475af1306a02eec42847c00d4dae3b27b8328fcb25f81649439895e0394e"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Time/IClock.cs",
+    "Sha256": "0131677d7f75fa14aaad264ac6a381a649179b4ac824d61d90bfb4d67c7b2963"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Time/SystemClock.cs",
+    "Sha256": "46ee030a0dd40de992be53f313d5d5cd2dc470ab3fb433958554f96a78dee276"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Transactions/ExplicitLeafInsertPath.cs",
+    "Sha256": "fab85005c1947e554e83f833f2a81b2fc43cb6f906451dca128309cfb6d34450"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Transactions/LogicalConflictKey.cs",
+    "Sha256": "dd02c040376c29af91a1556596b9e87bc3a944bc13afbce78d0bcddeb952db6e"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Transactions/LogicalConflictRange.cs",
+    "Sha256": "01bad5ca16dc93bc138e1bb877bd65b39f500593120de5f785d702a8b0def3c7"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Transactions/PagerTransactionState.cs",
+    "Sha256": "9dc520adbf55bcfcc61a75bf9cc7b41f659de2956605ab88f0da335895208954"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Transactions/PagerWriteTransaction.cs",
+    "Sha256": "52cb437150d22b4a45999514deb1d9e1905f807836db76688f7e056ba3907a1f"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Transactions/TransactionCoordinator.cs",
+    "Sha256": "a0f8b64bd2dc90f6d8a39579f6857662078781e5d04af0e51695bc35f8622dc6"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Wal/ILiveWalRuntimeSnapshotProvider.cs",
+    "Sha256": "1e9143b4a391d2a9d5de8e2bf6916523b763d1ac29029073843173e6571be0ff"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Wal/IWalCheckpointCopyPlan.cs",
+    "Sha256": "6110a8954eb57370b3dbcb967343c1456837343423117b0ca24908fa91047619"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Wal/IWalCheckpointRuntimeSnapshotProvider.cs",
+    "Sha256": "6a594ec7c89a3bcecd99342735fd7d7edc884aea3f8ba7cf2b9962a0d3a14ad7"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Wal/IWalRecoveryRuntimeSnapshotProvider.cs",
+    "Sha256": "0fb9ddec994fd6ad9bca04c48fd81e0ca610415917e531d1ff7cba976c61a091"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Wal/IWalRuntimeDiagnosticsProvider.cs",
+    "Sha256": "dc46e112a8f68ef4a9f313fe70f6e601dea895424aa43b8993ab7d5cd866fdea"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Wal/IWriteAheadLog.cs",
+    "Sha256": "2a06e179bc83611e2e3e8ec6dab248cda9463952d23115b1740b0f9fb21b0d43"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Wal/MemoryWriteAheadLog.cs",
+    "Sha256": "cdbd764bad73900cf66dd763b678dbe5e1bc40694b98d4f9f6416eb8118b0378"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Wal/WalCommitResult.cs",
+    "Sha256": "857edb23267648244941f4d0294c533fc669141f3c49faed04b2af78dc612fa8"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Wal/WalFlushDiagnosticsSnapshot.cs",
+    "Sha256": "3ac4997b033defe47b35de924324ac3cf99b2a6ba7e5f0a8062431672c8ad4d9"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Wal/WalFlushPolicy.cs",
+    "Sha256": "ac417b6c12eaae5ad2c7931d24b143f4605fac1c0e5e0b8ab1512266011b199d"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Wal/WalFrameWrite.cs",
+    "Sha256": "00c5b0b6f8c9d05fdc4cbfada76998c81fa6f9dab90ebcb589c44710b6bb0708"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Wal/WalIndex.cs",
+    "Sha256": "b9546efb5337fbbe9e81220939272b078fb4c8ff7a97837fe649caac807ea809"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Wal/WalSnapshotMap.cs",
+    "Sha256": "ee322f04fa7cf6e45c27b3ce98534267f7e9f987c7cb10a90937d3c11ca5c20d"
+  },
+  {
+    "Path": "src/CSharpDB.Storage/Wal/WriteAheadLog.cs",
+    "Sha256": "53863b62be53628d0ab80a6ef0fc6a2a37dbe7e902a41f13360946ae8e163fe0"
+  },
+  {
+    "Path": "src/Directory.Build.props",
+    "Sha256": "7ed891e47994615f719aabc98311ae2995c5f1d84f568ea07de4fb9fd4afab2b"
+  },
+  {
+    "Path": "src/Directory.Build.targets",
+    "Sha256": "50f22e7bffb6ad7b8b93b85d7b55c4608b68acb6cfb8a8ef9405ca4a4c959117"
+  },
+  {
+    "Path": "src/CSharpDB.ImportExport/CSharpDB.ImportExport.csproj",
+    "Sha256": "55025eb0a27d5c2f3206b50fe24982fb8769eae35fbd2322d7b7dc8387ffd476"
+  },
+  {
+    "Path": "src/CSharpDB.ImportExport/Models/TableArchiveCheckConstraint.cs",
+    "Sha256": "a1ff83a445d4ee385cc324604fe2535c044500cbd778b2605a0251116f792183"
+  },
+  {
+    "Path": "src/CSharpDB.ImportExport/Models/TableArchiveColumn.cs",
+    "Sha256": "2cf47e57ec67b583ac3e5f10d3f7f9bd7e184052ae13fc217d8ef1f1fe47b7be"
+  },
+  {
+    "Path": "src/CSharpDB.ImportExport/Models/TableArchiveForeignKey.cs",
+    "Sha256": "e000a9c0cc0f42ba0f46160f015a6e9cae7e9a813f05fb5955dc72795392fdea"
+  },
+  {
+    "Path": "src/CSharpDB.ImportExport/Models/TableArchiveIndexManifest.cs",
+    "Sha256": "62ae7b38bf8ff798f22d8646ea8cc394b62828e7e621a00e75e6d8fc87f826d8"
+  },
+  {
+    "Path": "src/CSharpDB.ImportExport/Models/TableArchiveKeyConstraint.cs",
+    "Sha256": "d66acae4bc3dbe30faace9a886640262847c296029da130f42b03b75b2d888f9"
+  },
+  {
+    "Path": "src/CSharpDB.ImportExport/Models/TableArchiveManifest.cs",
+    "Sha256": "16ec11724e352950ad1220d6236ca9a6fd3a8047ab0b084a714cfce9c6e85008"
+  },
+  {
+    "Path": "src/CSharpDB.ImportExport/Models/TableArchiveRowLookupResult.cs",
+    "Sha256": "78365da3166f8c1f4f04131806077d7c624851ceeb5e4e8a92dc276568e07c99"
+  },
+  {
+    "Path": "src/CSharpDB.ImportExport/Models/TableArchiveSchema.cs",
+    "Sha256": "ae9cd047dc50fe637778528853f8806b1c282cae9caa1792a79db75e61881521"
+  },
+  {
+    "Path": "src/CSharpDB.ImportExport/Models/TableArchiveSecondaryIndex.cs",
+    "Sha256": "a0ee5be1dc02005e5721bd989aa644df7fb6f7f6de77e20c418ff3816422db12"
+  },
+  {
+    "Path": "src/CSharpDB.ImportExport/Models/TableArchiveSectionDigests.cs",
+    "Sha256": "527386ddaecdbc4f727a090e8f4aeb3d0216baeb310a88eeda11fc54819bb134"
+  },
+  {
+    "Path": "src/CSharpDB.ImportExport/README.md",
+    "Sha256": "20ea49883e6bc5c0d9b30e3a13ae836797a0bad3b70f5577d14fda1047c41399"
+  },
+  {
+    "Path": "src/CSharpDB.ImportExport/Serialization/TableArchiveJson.cs",
+    "Sha256": "7dd1b09ab2c4f4757875f21c49503278afc7a9d71f1ae0249b6efbeec964cefa"
+  },
+  {
+    "Path": "src/CSharpDB.ImportExport/Serialization/TableArchiveJsonContext.cs",
+    "Sha256": "59bfc4f490d93e371ba7b7c4c132c4e702b5415529eb5059c6ab2aff77e5e4b8"
+  },
+  {
+    "Path": "src/CSharpDB.ImportExport/Serialization/TableArchiveNativeFormat.cs",
+    "Sha256": "dc806efc103139efc7946e9f82a69d6a6085dfbfefb07cbc9ebe7e18857089aa"
+  },
+  {
+    "Path": "src/CSharpDB.ImportExport/Serialization/TableArchiveReadDocuments.cs",
+    "Sha256": "90fb2e1311a6dad166ac341c30b756ed57ef5ac951e86915600d2059bf8f28a3"
+  },
+  {
+    "Path": "src/CSharpDB.ImportExport/TableArchives/TableArchivePrimaryKeyLookupReader.cs",
+    "Sha256": "b6b4958514d0cab24bb3bbc32f2fe5b6eb737fe2544a1b8510bd28a2f806c7c4"
+  },
+  {
+    "Path": "src/CSharpDB.ImportExport/TableArchives/TableArchiveReader.cs",
+    "Sha256": "31afe9a2852fc0b60d6bb457e8065968bba501bfca5dddb8d70eb1392cb7c551"
+  },
+  {
+    "Path": "src/CSharpDB.ImportExport/TableArchives/TableArchiveWriter.cs",
+    "Sha256": "3b177fc030c7a7a28bb5db1df3a21514054f6ac428ad47528aadb5c8f7046172"
+  }
+]

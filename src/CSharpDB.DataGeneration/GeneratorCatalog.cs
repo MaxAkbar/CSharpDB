@@ -147,7 +147,7 @@ public static class GeneratorCatalog
             else if (column.Type == DbType.Integer)
                 return random.NextInclusive(checked((long)decimal.Ceiling(rule.Minimum)), checked((long)decimal.Floor(rule.Maximum)));
             else if (column.Type == DbType.Decimal)
-                return decimal.Round(rule.Minimum + (decimal)random.NextDouble() * (rule.Maximum - rule.Minimum), column.EffectiveType.Scale ?? 2);
+                return decimal.Round(rule.Minimum + CSharpDbDecimalCodec.FromDouble(random.NextDouble()) * (rule.Maximum - rule.Minimum), column.EffectiveType.Scale ?? 2);
             else expression = new { op = "double", min = rule.Minimum, max = rule.Maximum, digits = 2 };
         }
         else if (rule.Generator == FieldGenerator.ValueList)
@@ -193,7 +193,7 @@ public static class GeneratorCatalog
         var table = new SqlTableSpec { GeneratorKey = tableId, Name = schema.TableName,
             Columns = [new SqlColumnSpec { Name = columnId, Generator = JsonSerializer.SerializeToElement(expression) }] };
         object? result = SpecDataGenerator.GenerateRow(new GenerationOptions { Seed = profile.Seed, ReferenceUtc = profile.ReferenceUtc, Locale = profile.Locale }, table, ordinal)[columnId];
-        if (column.Type == DbType.Decimal && result is double real) return decimal.Round((decimal)real, column.EffectiveType.Scale ?? 2);
+        if (column.Type == DbType.Decimal && result is double real) return decimal.Round(CSharpDbDecimalCodec.FromDouble(real), column.EffectiveType.Scale ?? 2);
         if (column.Type == DbType.Integer && result is double integer) return checked((long)Math.Round(integer));
         // Text generation is explicitly sized; typed constants and lists are validated without truncation.
         if (rule.Generator == FieldGenerator.Email && result is string email)

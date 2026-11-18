@@ -43,7 +43,7 @@ Build once, then run the frozen executable from the repository root:
 
 ```powershell
 dotnet build tests/CSharpDB.NetworkBenchmarks/CSharpDB.NetworkBenchmarks.csproj -c Release
-dotnet tests/CSharpDB.NetworkBenchmarks/bin/Release/net10.0/CSharpDB.NetworkBenchmarks.dll --output C:/benchmarks/network-pilot-new --iterations 2000 --open-iterations 300 --rounds 4 --settle-seconds 10
+dotnet tests/CSharpDB.NetworkBenchmarks/bin/Release/net11.0/CSharpDB.NetworkBenchmarks.dll --output C:/benchmarks/network-pilot-new --iterations 2000 --open-iterations 300 --rounds 4 --settle-seconds 10
 ```
 
 Choose a fresh output directory outside the repository for every run. The
@@ -81,7 +81,7 @@ opens must send zero `GetInfo` RPCs; unpooled opens must send one each. All
 arms use the same one-row query, host, and fixed iteration count.
 
 ```powershell
-dotnet tests/CSharpDB.NetworkBenchmarks/bin/Release/net10.0/CSharpDB.NetworkBenchmarks.dll --experiment pooling --output C:/benchmarks/pooling-pilot-new --iterations 1000 --rounds 6 --settle-seconds 10
+dotnet tests/CSharpDB.NetworkBenchmarks/bin/Release/net11.0/CSharpDB.NetworkBenchmarks.dll --experiment pooling --output C:/benchmarks/pooling-pilot-new --iterations 1000 --rounds 6 --settle-seconds 10
 ```
 
 Each arm settles for ten seconds before the six rounds. Round orders are
@@ -107,7 +107,7 @@ gRPC-Web/HTTP/1.1 and Native gRPC/HTTP/2, giving 12 cases. Pooled cases use
 the same SDK-owned pool with `Max Pool Size=1` for each endpoint and mode.
 
 ```powershell
-dotnet tests/CSharpDB.NetworkBenchmarks/bin/Release/net10.0/CSharpDB.NetworkBenchmarks.dll --experiment shared --output C:/benchmarks/shared-pool-new --iterations 1000 --open-iterations 100 --rounds 12 --settle-seconds 10
+dotnet tests/CSharpDB.NetworkBenchmarks/bin/Release/net11.0/CSharpDB.NetworkBenchmarks.dll --experiment shared --output C:/benchmarks/shared-pool-new --iterations 1000 --open-iterations 100 --rounds 12 --settle-seconds 10
 ```
 
 Reused/pooled cases settle for ten seconds; fresh-client cases settle with
@@ -143,7 +143,7 @@ causal improvement.
 ## Persistent command session experiment
 
 ```powershell
-dotnet tests/CSharpDB.NetworkBenchmarks/bin/Release/net10.0/CSharpDB.NetworkBenchmarks.dll --experiment session --output C:/benchmarks/session-new
+dotnet tests/CSharpDB.NetworkBenchmarks/bin/Release/net11.0/CSharpDB.NetworkBenchmarks.dll --experiment session --output C:/benchmarks/session-new
 ```
 
 This fixed C1 experiment compares pooled, reused SDK and ADO.NET calls over
@@ -197,7 +197,7 @@ as an additive component of client latency.
 ### Separate client and daemon processes
 
 ```powershell
-dotnet tests/CSharpDB.NetworkBenchmarks/bin/Release/net10.0/CSharpDB.NetworkBenchmarks.dll --experiment session-isolated --output C:/benchmarks/session-isolated-new
+dotnet tests/CSharpDB.NetworkBenchmarks/bin/Release/net11.0/CSharpDB.NetworkBenchmarks.dll --experiment session-isolated --output C:/benchmarks/session-isolated-new
 ```
 
 This is a separate deployment experiment: the parent runs SDK/ADO.NET and
@@ -220,7 +220,7 @@ records the separate process IDs and server runtime.
 ### Eight concurrent pooled sessions
 
 ```powershell
-dotnet tests/CSharpDB.NetworkBenchmarks/bin/Release/net10.0/CSharpDB.NetworkBenchmarks.dll --experiment session-c8 --output C:/benchmarks/session-c8-new
+dotnet tests/CSharpDB.NetworkBenchmarks/bin/Release/net11.0/CSharpDB.NetworkBenchmarks.dll --experiment session-c8 --output C:/benchmarks/session-c8-new
 ```
 
 This fixed C8 experiment runs eight workers against the same separate-process
@@ -266,7 +266,7 @@ validation and must not be treated as exact memory savings.
 ### Complete pooled request lifecycle
 
 ```powershell
-dotnet tests/CSharpDB.NetworkBenchmarks/bin/Release/net10.0/CSharpDB.NetworkBenchmarks.dll --experiment pooled-lifecycle-c8 --output C:/benchmarks/pooled-lifecycle-c8-new
+dotnet tests/CSharpDB.NetworkBenchmarks/bin/Release/net11.0/CSharpDB.NetworkBenchmarks.dll --experiment pooled-lifecycle-c8 --output C:/benchmarks/pooled-lifecycle-c8-new
 ```
 
 This diagnostic compares a held rental with a complete short-lived pooled

@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace CSharpDB.Primitives;
 
 /// <summary>
@@ -11,6 +13,41 @@ public static class CSharpDbDecimalCodec
     public const int MaximumPrecision = 18;
 
     private static readonly decimal[] ScaleFactors = CreateScaleFactors();
+
+    /// <summary>
+    /// Converts a SQL REAL to DECIMAL using 15 significant decimal digits.
+    /// This keeps binary floating-point tails out of decimal assignments after
+    /// .NET 11 changed casts to preserve the full binary value.
+    /// </summary>
+    public static decimal FromDouble(double value)
+    {
+        if (!double.IsFinite(value))
+            throw new OverflowException("A non-finite value cannot be converted to DECIMAL.");
+
+        // These floating-point bounds round outward to +/-2^96, so equality
+        // already overflows. Check before precision rounding can hide it.
+        if (value <= (double)decimal.MinValue || value >= (double)decimal.MaxValue)
+            throw new OverflowException("The floating-point value is outside the DECIMAL range.");
+
+        Span<char> text = stackalloc char[32];
+        value.TryFormat(text, out int written, "G15", CultureInfo.InvariantCulture);
+        return decimal.Parse(text[..written], NumberStyles.Float, CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>Converts a single-precision value using 7 significant decimal digits.</summary>
+    public static decimal FromSingle(float value)
+    {
+        if (!float.IsFinite(value))
+            throw new OverflowException("A non-finite value cannot be converted to DECIMAL.");
+
+        // The rounded floating-point bounds are exclusive here as well.
+        if (value <= (float)decimal.MinValue || value >= (float)decimal.MaxValue)
+            throw new OverflowException("The floating-point value is outside the DECIMAL range.");
+
+        Span<char> text = stackalloc char[32];
+        value.TryFormat(text, out int written, "G7", CultureInfo.InvariantCulture);
+        return decimal.Parse(text[..written], NumberStyles.Float, CultureInfo.InvariantCulture);
+    }
 
     public static (int Precision, int Scale) ResolveFacets(int? precision, int? scale)
     {

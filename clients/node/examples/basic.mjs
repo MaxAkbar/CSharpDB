@@ -7,7 +7,7 @@
  *
  *   2. Copy the library to ./native/:
  *      mkdir -p native
- *      cp src/CSharpDB.Native/bin/Release/net10.0/win-x64/publish/CSharpDB.Native.dll native/
+ *      cp src/CSharpDB.Native/bin/Release/net11.0/win-x64/publish/CSharpDB.Native.dll native/
  *
  *   3. npm install && npm run build && node examples/basic.mjs
  */

@@ -1,0 +1,67 @@
+{
+  "SchemaVersion": 1,
+  "StartedUtc": "2026-11-14T09:01:54.7343939+00:00",
+  "CompletedUtc": "2026-11-14T09:02:19.0447504+00:00",
+  "Runtime": ".NET 11.0.0",
+  "RuntimeVersion": "11.0.0",
+  "Framework": ".NETCoreApp,Version=v11.0",
+  "Architecture": "X64",
+  "OS": "Microsoft Windows 10.0.26300",
+  "ProcessorCount": 16,
+  "WarmupSeconds": 4,
+  "MeasuredSeconds": 20,
+  "Durability": "Durable",
+  "RuntimeAsyncOptIn": false,
+  "CorrectnessPassed": true,
+  "Sink": 0,
+  "Assemblies": [
+    {
+      "Name": "CSharpDB.Engine",
+      "Sha256": "506141fdf29ba9835f3966a9be1416b740ab9aad3d805e1c9a4183d299add310"
+    },
+    {
+      "Name": "CSharpDB.Sql",
+      "Sha256": "8226dc5014fcd4362311e9281a1de5c099a03c54d4dc7e902e94794235ecdcd8"
+    },
+    {
+      "Name": "CSharpDB.Primitives",
+      "Sha256": "6745cb9abf8771eec302a7b78738c7434808dc1a3ae788d1fe2d77184a77c64b"
+    },
+    {
+      "Name": "CSharpDB.Benchmarks",
+      "Sha256": "f7534082cb0dfb5b29df9a7955aaac9c18c609f71a10659b71fc18fb5aafd4dd"
+    }
+  ],
+  "Results": [
+    {
+      "Name": "Durable single INSERT",
+      "Operations": 5822,
+      "Units": 5822,
+      "UnitsPerOperation": 1,
+      "ElapsedSeconds": 20.0000639,
+      "OperationsPerSecond": 291.09906993847153,
+      "UnitsPerSecond": 291.09906993847153,
+      "MeanUsPerUnit": 3435.2565956715907,
+      "P50OperationUs": 3379,
+      "P95OperationUs": 3615.8,
+      "P99OperationUs": 4672.3,
+      "RetainedSamples": 5822,
+      "SampleEvery": 1,
+      "AllocatedBytes": 19411120,
+      "BytesPerUnit": 3334.098248024734,
+      "CpuMs": 1484.375,
+      "CpuUsPerUnit": 254.95963586396428,
+      "Gen0": 2,
+      "Gen1": 0,
+      "Gen2": 0
+    }
+  ],
+  "Checks": [
+    {
+      "Name": "Durable single INSERT",
+      "ExpectedRows": 6962,
+      "ExpectedSum": 242382030,
+      "ReopenVerified": true
+    }
+  ]
+}

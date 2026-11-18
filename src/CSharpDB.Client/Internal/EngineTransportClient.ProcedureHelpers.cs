@@ -409,8 +409,8 @@ internal sealed partial class EngineTransportClient
             case decimal number: result = number; return true;
             case long integer: result = integer; return true;
             case int integer: result = integer; return true;
-            case double real when double.IsFinite(real): result = checked((decimal)real); return true;
-            case float real when float.IsFinite(real): result = checked((decimal)real); return true;
+            case double real when double.IsFinite(real): result = CSharpDB.Primitives.CSharpDbDecimalCodec.FromDouble(real); return true;
+            case float real when float.IsFinite(real): result = CSharpDB.Primitives.CSharpDbDecimalCodec.FromSingle(real); return true;
             case string text when decimal.TryParse(
                 text,
                 NumberStyles.Number,

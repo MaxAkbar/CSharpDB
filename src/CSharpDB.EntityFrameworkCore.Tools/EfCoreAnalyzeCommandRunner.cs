@@ -409,7 +409,7 @@ internal static class EfCoreAnalyzeCommandRunner
             EfCoreWorkerClientStatus.ProjectIncompatible =>
                 (
                     "CSHARPDB-EF-PROJECT-003",
-                    "The project must target only net10.0."),
+                    "The project must target only net11.0."),
             EfCoreWorkerClientStatus.BuildFailed =>
                 (
                     "CSHARPDB-EF-BUILD-001",

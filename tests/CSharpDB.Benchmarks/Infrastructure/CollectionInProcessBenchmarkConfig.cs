@@ -15,7 +15,7 @@ internal sealed class CollectionInProcessBenchmarkConfig : ManualConfig
     {
         AddJob(
             Job.Default
-                .WithToolchain(InProcessNoEmitToolchain.Instance)
+                .WithToolchain(InProcessNoEmitToolchain.Default)
                 .WithWarmupCount(warmupCount)
                 .WithIterationCount(iterationCount));
     }

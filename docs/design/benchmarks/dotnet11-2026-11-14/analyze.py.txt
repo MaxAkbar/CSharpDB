@@ -1,0 +1,39 @@
+import csv
+import json
+import statistics
+from pathlib import Path
+
+root = Path(__file__).resolve().parent
+runs = {(pair, tfm): json.loads((root / 'measured' / f'pair-{pair}-{tfm}.json').read_text(encoding='utf-8-sig'))
+        for pair in range(1, 4) for tfm in ('net10.0', 'net11.0')}
+assert all(r['CorrectnessPassed'] and len(r['Results']) == 7 for r in runs.values())
+assert all(all(x['RetainedSamples'] >= 100 and x['ElapsedSeconds'] >= 8 for x in r['Results']) for r in runs.values())
+summary = []
+for index, first in enumerate(runs[1, 'net10.0']['Results']):
+    old = [runs[p, 'net10.0']['Results'][index] for p in range(1, 4)]
+    new = [runs[p, 'net11.0']['Results'][index] for p in range(1, 4)]
+    assert all(x['Name'] == first['Name'] for x in old + new)
+    a = [x['UnitsPerSecond'] for x in old]
+    b = [x['UnitsPerSecond'] for x in new]
+    paired = [(y / x - 1) * 100 for x, y in zip(a, b)]
+    def median(items, key): return statistics.median(x[key] for x in items)
+    record = dict(Name=first['Name'], Net10MedianRate=statistics.median(a), Net11MedianRate=statistics.median(b),
+                  MedianRateChangePct=(statistics.median(b) / statistics.median(a) - 1) * 100,
+                  PairedChangesPct=paired, Net10RsdPct=statistics.stdev(a) / statistics.mean(a) * 100,
+                  Net11RsdPct=statistics.stdev(b) / statistics.mean(b) * 100,
+                  Net10Rates=a, Net11Rates=b, Net10Bytes=median(old, 'BytesPerUnit'), Net11Bytes=median(new, 'BytesPerUnit'),
+                  AllocChangePct=(median(new, 'BytesPerUnit') / median(old, 'BytesPerUnit') - 1) * 100,
+                  Net10CpuUs=median(old, 'CpuUsPerUnit'), Net11CpuUs=median(new, 'CpuUsPerUnit'),
+                  Net10P95OperationUs=median(old, 'P95OperationUs'), Net11P95OperationUs=median(new, 'P95OperationUs'))
+    summary.append(record)
+(root / 'summary.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
+with (root / 'summary.csv').open('w', newline='', encoding='utf-8') as f:
+    writer = csv.DictWriter(f, fieldnames=summary[0].keys())
+    writer.writeheader()
+    writer.writerows(summary)
+for row in summary:
+    print(f"{row['Name']}: {row['Net10MedianRate']:,.1f} -> {row['Net11MedianRate']:,.1f} ({row['MedianRateChangePct']:+.2f}%), "
+          f"pairs={[round(x, 2) for x in row['PairedChangesPct']]}, RSD={row['Net10RsdPct']:.2f}/{row['Net11RsdPct']:.2f}%, "
+          f"bytes={row['Net10Bytes']:.1f}/{row['Net11Bytes']:.1f}, alloc={row['AllocChangePct']:+.2f}%, "
+          f"CPU us={row['Net10CpuUs']:.3f}/{row['Net11CpuUs']:.3f}")
+print('Validated: six complete runs; 42 measurements; 100+ latency samples and 8+ measured seconds each.')
