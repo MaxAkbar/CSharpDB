@@ -24,6 +24,11 @@ public static class CSharpDbDecimalCodec
         if (!double.IsFinite(value))
             throw new OverflowException("A non-finite value cannot be converted to DECIMAL.");
 
+        // These floating-point bounds round outward to +/-2^96, so equality
+        // already overflows. Check before precision rounding can hide it.
+        if (value <= (double)decimal.MinValue || value >= (double)decimal.MaxValue)
+            throw new OverflowException("The floating-point value is outside the DECIMAL range.");
+
         Span<char> text = stackalloc char[32];
         value.TryFormat(text, out int written, "G15", CultureInfo.InvariantCulture);
         return decimal.Parse(text[..written], NumberStyles.Float, CultureInfo.InvariantCulture);
@@ -34,6 +39,10 @@ public static class CSharpDbDecimalCodec
     {
         if (!float.IsFinite(value))
             throw new OverflowException("A non-finite value cannot be converted to DECIMAL.");
+
+        // The rounded floating-point bounds are exclusive here as well.
+        if (value <= (float)decimal.MinValue || value >= (float)decimal.MaxValue)
+            throw new OverflowException("The floating-point value is outside the DECIMAL range.");
 
         Span<char> text = stackalloc char[32];
         value.TryFormat(text, out int written, "G7", CultureInfo.InvariantCulture);

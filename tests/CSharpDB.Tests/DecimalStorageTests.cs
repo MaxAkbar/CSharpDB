@@ -22,12 +22,60 @@ public sealed class DecimalStorageTests
     [InlineData(double.PositiveInfinity)]
     [InlineData(double.NegativeInfinity)]
     [InlineData(double.MaxValue)]
+    [InlineData(-double.MaxValue)]
     public void RealToDecimal_RejectsNonFiniteOrOutOfRangeValues(double value)
         => Assert.Throws<OverflowException>(() => CSharpDbDecimalCodec.FromDouble(value));
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(-1)]
+    public void RealToDecimal_RejectsOverflowBeforePrecisionRounding(int sign)
+    {
+        double boundary = Math.ScaleB(1d, 96);
+        Assert.Throws<OverflowException>(() => CSharpDbDecimalCodec.FromDouble(sign * boundary));
+        Assert.Throws<OverflowException>(() => CSharpDbDecimalCodec.FromDouble(sign * Math.BitIncrement(boundary)));
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(-1)]
+    public void RealToDecimal_AcceptsNearestValueInsideDecimalRange(int sign)
+    {
+        double value = sign * Math.BitDecrement(Math.ScaleB(1d, 96));
+        Assert.Equal(sign * 79228162514264300000000000000m, CSharpDbDecimalCodec.FromDouble(value));
+    }
 
     [Fact]
     public void SingleToDecimal_UsesExplicitDecimalPrecision()
         => Assert.Equal(1.23m, CSharpDbDecimalCodec.FromSingle(1.23f));
+
+    [Theory]
+    [InlineData(float.NaN)]
+    [InlineData(float.PositiveInfinity)]
+    [InlineData(float.NegativeInfinity)]
+    [InlineData(float.MaxValue)]
+    [InlineData(-float.MaxValue)]
+    public void SingleToDecimal_RejectsNonFiniteOrOutOfRangeValues(float value)
+        => Assert.Throws<OverflowException>(() => CSharpDbDecimalCodec.FromSingle(value));
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(-1)]
+    public void SingleToDecimal_RejectsOverflowBeforePrecisionRounding(int sign)
+    {
+        float boundary = MathF.ScaleB(1f, 96);
+        Assert.Throws<OverflowException>(() => CSharpDbDecimalCodec.FromSingle(sign * boundary));
+        Assert.Throws<OverflowException>(() => CSharpDbDecimalCodec.FromSingle(sign * MathF.BitIncrement(boundary)));
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(-1)]
+    public void SingleToDecimal_AcceptsNearestValueInsideDecimalRange(int sign)
+    {
+        float value = sign * MathF.BitDecrement(MathF.ScaleB(1f, 96));
+        Assert.Equal(sign * 79228160000000000000000000000m, CSharpDbDecimalCodec.FromSingle(value));
+    }
 
     [Fact]
     public void DbValue_NormalizesDecimalCoefficientAndScale()

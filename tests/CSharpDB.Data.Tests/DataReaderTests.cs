@@ -462,6 +462,48 @@ public class DataReaderTests : IAsyncLifetime
         Assert.Equal("Alice", values[1]);
     }
 
+    [Theory]
+    [InlineData(1)]
+    [InlineData(-1)]
+    public async Task GetDecimal_RejectsRealOverflowBeforePrecisionRounding(int sign)
+    {
+        double value = sign * Math.ScaleB(1d, 96);
+        using var command = _conn.CreateCommand();
+        command.CommandText = "SELECT @value AS amount;";
+        command.Parameters.Add(new CSharpDbParameter
+        {
+            ParameterName = "@value",
+            DbType = System.Data.DbType.Double,
+            Value = value,
+        });
+        await using var reader = await command.ExecuteReaderAsync(Ct);
+
+        Assert.True(await reader.ReadAsync(Ct));
+        Assert.Equal(value, reader.GetDouble(0));
+        Assert.Throws<OverflowException>(() => reader.GetDecimal(0));
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(-1)]
+    public async Task GetDecimal_AcceptsRealNearestToDecimalRangeBoundary(int sign)
+    {
+        double value = sign * Math.BitDecrement(Math.ScaleB(1d, 96));
+        using var command = _conn.CreateCommand();
+        command.CommandText = "SELECT @value AS amount;";
+        command.Parameters.Add(new CSharpDbParameter
+        {
+            ParameterName = "@value",
+            DbType = System.Data.DbType.Double,
+            Value = value,
+        });
+        await using var reader = await command.ExecuteReaderAsync(Ct);
+
+        Assert.True(await reader.ReadAsync(Ct));
+        Assert.Equal(value, reader.GetDouble(0));
+        Assert.Equal(sign * 79228162514264300000000000000m, reader.GetDecimal(0));
+    }
+
     [Fact]
     public async Task LogicalTypes_ControlMetadataAndClrMaterialization()
     {
