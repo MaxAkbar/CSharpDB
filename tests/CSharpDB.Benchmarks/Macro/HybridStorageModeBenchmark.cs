@@ -1419,58 +1419,43 @@ public static class HybridStorageModeBenchmark
         internal void AttachReaderTask(Task readerTask)
         {
             ArgumentNullException.ThrowIfNull(readerTask);
-            bool notifyUnexpectedExit = false;
             lock (_gate)
             {
                 _readerTask = readerTask;
                 if (_state == Running && readerTask.IsCompleted)
-                {
-                    _state = UnexpectedExit;
-                    notifyUnexpectedExit = true;
-                }
+                    RecordUnexpectedExit();
             }
-
-            if (notifyUnexpectedExit)
-                _onUnexpectedExit();
         }
 
         internal void MarkCoordinatedExit()
         {
-            bool notifyUnexpectedExit = false;
             lock (_gate)
             {
                 if (_state != Running)
                     return;
 
                 if (_readerTask?.IsCompleted == true)
-                {
-                    _state = UnexpectedExit;
-                    notifyUnexpectedExit = true;
-                }
+                    RecordUnexpectedExit();
                 else
-                {
                     _state = CoordinatedExit;
-                }
             }
-
-            if (notifyUnexpectedExit)
-                _onUnexpectedExit();
         }
 
         internal void MarkReaderCompleted()
         {
-            bool notifyUnexpectedExit = false;
             lock (_gate)
             {
                 if (_state == Running)
-                {
-                    _state = UnexpectedExit;
-                    notifyUnexpectedExit = true;
-                }
+                    RecordUnexpectedExit();
             }
+        }
 
-            if (notifyUnexpectedExit)
-                _onUnexpectedExit();
+        private void RecordUnexpectedExit()
+        {
+            // Publish the phase flag while holding _gate so a concurrent drain
+            // cannot observe the exit and finish before the controller sees it.
+            _state = UnexpectedExit;
+            _onUnexpectedExit();
         }
     }
 
