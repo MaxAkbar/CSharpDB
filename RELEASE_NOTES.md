@@ -1,5 +1,33 @@
 # What's New
 
+## CSharpDB 5.0.0
+
+The CSharpDB runtime packages now target .NET 11. Retarget your application to
+`net11.0` and update its deployment runtime before updating the packages.
+Applications that still target .NET 10 can continue using CSharpDB 4.7.1.
+Existing database and WAL files can be opened without conversion. The EF Core
+provider and repository-local migration tool continue to use EF Core 10.0.14.
+
+### Correctness and compatibility
+
+- Transactions waiting for a conflicting commit now resume when that commit
+  completes or rolls back, including when the notification arrives just before
+  the waiting transaction suspends.
+- Converting a floating-point value to DECIMAL preserves the previous rounding
+  behavior for representable values. Conversions at or beyond either signed
+  boundary of the decimal range raise an overflow error before rounding.
+- The NativeAOT library keeps its existing filenames on Windows, Linux and macOS.
+  Native clients can continue loading the same library names.
+
+### Performance
+
+In three paired Windows x64 runs with identical core-engine source, median
+throughput on .NET 11 increased by 7.1% for cached primary-key reads, 4.2% for
+full scans of 10,000 rows and 3.1% for in-memory inserts. Parser and durable-write
+results varied across runs. The
+[benchmark report](https://github.com/MaxAkbar/CSharpDB/blob/1833989ef17e3ba9985f4f82b76259601eb19a56/docs/design/dotnet11-benchmark-results-2026-11-14.md)
+includes the workload definitions and individual comparisons.
+
 ## CSharpDB 4.7.1
 
 CSharpDB 4.7.1 updates dependencies while preserving compatible OpenAPI,

@@ -79,10 +79,14 @@
                     <a href="#release-history">Earlier releases</a>
                     <a href="https://github.com/MaxAkbar/CSharpDB/releases">All GitHub releases ↗</a>
                 </nav>
-                <article class="news-entry unreleased" id="unreleased" data-release-status="unreleased">
+                <article class="news-entry unreleased" id="unreleased" data-release-status="unreleased" data-release-version="5.0.0">
                     <div class="news-entry-header"><span class="news-badge news-badge-unreleased">Unreleased</span><span class="news-date">Development work · not in a published package</span></div>
-                    <h2>Next release</h2>
-                    <p>Updates for the next release will appear here.</p>
+                    <h2>.NET 11 upgrade</h2>
+                    <p>Retarget applications to .NET 11 before updating the CSharpDB runtime packages. Applications staying on .NET 10 can continue using v4.7.1. Existing database files open without conversion, and the EF Core provider continues to use EF Core 10.0.14.</p>
+                    <ul>
+                        <li>Concurrent transactions now wake reliably when a conflicting commit completes or rolls back.</li>
+                        <li>Floating-point values retain their previous rounding behavior when converted to DECIMAL. Values outside the decimal range raise an overflow error.</li>
+                    </ul>
                 </article>
                 <h2 id="published-releases">Published releases</h2>
                 <article class="news-entry" id="v4.7.1" data-release-status="published" data-release-version="4.7.1">
